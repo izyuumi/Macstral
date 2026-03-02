@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // MARK: - PythonBackendManager
 
@@ -9,6 +10,17 @@ final class PythonBackendManager: NSObject {
 
     // MARK: - Constants
 
+    private struct PythonRuntimeSpec {
+        let archiveURL: URL
+        let sha256: String
+    }
+
+    private struct ModelFileSpec {
+        let filename: String
+        let url: URL
+        let sha256: String
+    }
+
     private static let supportDir = FileManager.default.urls(
         for: .applicationSupportDirectory, in: .userDomainMask
     ).first!.appendingPathComponent("Macstral")
@@ -16,19 +28,51 @@ final class PythonBackendManager: NSObject {
     private static let pythonDir = supportDir.appendingPathComponent("python")
     private static let envDir = supportDir.appendingPathComponent("env")
     private static let modelDir = supportDir.appendingPathComponent("models/voxtral-4bit")
+    private static let modelVerificationMarker = modelDir.appendingPathComponent(".verified.sha256")
 
     private static let pythonBinary = pythonDir
         .appendingPathComponent("python/bin/python3.11")
 
-    private static let pythonTarURL = URL(
-        string: "https://github.com/indygreg/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-aarch64-apple-darwin-install_only.tar.gz"
-    )!
+#if arch(arm64)
+    private static let pythonRuntime = PythonRuntimeSpec(
+        archiveURL: URL(string: "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-aarch64-apple-darwin-install_only.tar.gz")!,
+        sha256: "5a69382da99c4620690643517ca1f1f53772331b347e75f536088c42a4cf6620"
+    )
+#elseif arch(x86_64)
+    private static let pythonRuntime = PythonRuntimeSpec(
+        archiveURL: URL(string: "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-x86_64-apple-darwin-install_only.tar.gz")!,
+        sha256: "1e23ffe5bc473e1323ab8f51464da62d77399afb423babf67f8e13c82b69c674"
+    )
+#else
+    private static let pythonRuntime = PythonRuntimeSpec(
+        archiveURL: URL(string: "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-aarch64-apple-darwin-install_only.tar.gz")!,
+        sha256: "5a69382da99c4620690643517ca1f1f53772331b347e75f536088c42a4cf6620"
+    )
+#endif
 
-    private static let modelFiles: [(String, String)] = [
-        ("config.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/config.json"),
-        ("model.safetensors", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/model.safetensors"),
-        ("model.safetensors.index.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/model.safetensors.index.json"),
-        ("tekken.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/tekken.json"),
+    private static let modelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
+
+    private static let modelFiles: [ModelFileSpec] = [
+        .init(
+            filename: "config.json",
+            url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/config.json")!,
+            sha256: "02060864a4f33df5e4944684fc17f3026af4011830cac4def6e9e025315b10c5"
+        ),
+        .init(
+            filename: "model.safetensors",
+            url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors")!,
+            sha256: "6f59b425d8a1ceb2de795454558be63937cf75b59f9c9bc77accd85aaf32af05"
+        ),
+        .init(
+            filename: "model.safetensors.index.json",
+            url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors.index.json")!,
+            sha256: "80f68b80cf4b1638d864d1504061a266f59e37a8d90d7b20f2e1f30c2d034c2e"
+        ),
+        .init(
+            filename: "tekken.json",
+            url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/tekken.json")!,
+            sha256: "8434af1d39eba99f0ef46cf1450bf1a63fa941a26933a1ef5dbbf4adf0d00e44"
+        ),
     ]
 
     // MARK: - Public Callbacks
@@ -90,10 +134,14 @@ final class PythonBackendManager: NSObject {
     private func setupPython() async throws {
         let fm = FileManager.default
 
-        if fm.fileExists(atPath: Self.pythonBinary.path) {
+        if isPythonRuntimeReady() {
             log("[PythonBackendManager] Python already installed.")
             reportStep(.downloadingPython, progress: 1.0, status: "Python runtime ready")
             return
+        }
+
+        if fm.fileExists(atPath: Self.pythonDir.path) {
+            try? fm.removeItem(at: Self.pythonDir)
         }
 
         reportStep(.downloadingPython, progress: 0, status: "Downloading Python runtime...")
@@ -101,14 +149,16 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.pythonDir, withIntermediateDirectories: true)
 
         let tarPath = try await downloadFile(
-            from: Self.pythonTarURL,
+            from: Self.pythonRuntime.archiveURL,
             stepWeight: 0.25,
             baseProgress: 0.0
         )
+        defer { try? fm.removeItem(at: tarPath) }
+
+        try verifySHA256(of: tarPath, expected: Self.pythonRuntime.sha256, label: "python runtime archive")
 
         reportStep(.downloadingPython, progress: 0.25, status: "Extracting Python runtime...")
 
-        // Extract tar.gz using /usr/bin/tar
         let extract = Process()
         extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         extract.arguments = ["xzf", tarPath.path, "-C", Self.pythonDir.path]
@@ -119,8 +169,9 @@ final class PythonBackendManager: NSObject {
             throw SetupError.extractionFailed("tar exited with status \(extract.terminationStatus)")
         }
 
-        // Clean up tar file
-        try? fm.removeItem(at: tarPath)
+        guard isPythonRuntimeReady() else {
+            throw SetupError.pythonValidationFailed("Downloaded runtime is not executable")
+        }
 
         log("[PythonBackendManager] Python extracted successfully.")
         reportStep(.downloadingPython, progress: 1.0, status: "Python runtime ready")
@@ -131,9 +182,7 @@ final class PythonBackendManager: NSObject {
     private func installDeps() async throws {
         let fm = FileManager.default
 
-        // Check if deps are already installed by looking for mlx_audio marker
-        let mlxAudioMarker = Self.envDir.appendingPathComponent("mlx_audio")
-        if fm.fileExists(atPath: mlxAudioMarker.path) {
+        if areDependenciesReady() {
             log("[PythonBackendManager] Dependencies already installed.")
             reportStep(.installingDeps, progress: 1.0, status: "Dependencies ready")
             return
@@ -143,25 +192,22 @@ final class PythonBackendManager: NSObject {
 
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
-        let pip = Process()
-        pip.executableURL = Self.pythonBinary
-        pip.arguments = [
-            "-m", "pip", "install",
-            "--target", Self.envDir.path,
-            "mlx-audio[stt]", "websockets",
-        ]
-        let pipOut = Pipe()
-        pip.standardOutput = pipOut
-        pip.standardError = pipOut
-        try pip.run()
+        let (status, output) = try runProcess(
+            executableURL: Self.pythonBinary,
+            arguments: [
+                "-m", "pip", "install",
+                "--target", Self.envDir.path,
+                "mlx-audio[stt]", "websockets",
+            ],
+            environment: processEnvironment(includePythonInPath: true)
+        )
 
-        // Read output in background
-        let outputData = pipOut.fileHandleForReading.readDataToEndOfFile()
-        pip.waitUntilExit()
+        if status != 0 {
+            throw SetupError.pipInstallFailed("pip exited with status \(status): \(output)")
+        }
 
-        if pip.terminationStatus != 0 {
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            throw SetupError.pipInstallFailed("pip exited with status \(pip.terminationStatus): \(output)")
+        guard areDependenciesReady() else {
+            throw SetupError.pipInstallFailed("Installed dependencies failed verification import")
         }
 
         log("[PythonBackendManager] Dependencies installed.")
@@ -173,9 +219,7 @@ final class PythonBackendManager: NSObject {
     private func downloadModel() async throws {
         let fm = FileManager.default
 
-        // Check if model is already downloaded by looking for model.safetensors
-        let modelFile = Self.modelDir.appendingPathComponent("model.safetensors")
-        if fm.fileExists(atPath: modelFile.path) {
+        if isModelReady() {
             log("[PythonBackendManager] Model already downloaded.")
             reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
             return
@@ -184,32 +228,53 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.modelDir, withIntermediateDirectories: true)
 
         let totalFiles = Self.modelFiles.count
-        for (index, (filename, urlString)) in Self.modelFiles.enumerated() {
-            let url = URL(string: urlString)!
-            let dest = Self.modelDir.appendingPathComponent(filename)
+        let hasVerificationMarker = fm.fileExists(atPath: Self.modelVerificationMarker.path)
+        if !hasVerificationMarker {
+            reportStep(.downloadingModel, progress: 0, status: "Verifying model files...")
+        }
 
-            if fm.fileExists(atPath: dest.path) {
-                log("[PythonBackendManager] \(filename) already exists, skipping.")
+        for (index, file) in Self.modelFiles.enumerated() {
+            let dest = Self.modelDir.appendingPathComponent(file.filename)
+
+            if hasVerificationMarker && isNonEmptyFile(at: dest) {
                 let fileProgress = Double(index + 1) / Double(totalFiles)
-                reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(filename)...")
+                reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(file.filename)...")
                 continue
+            }
+
+            if isNonEmptyFile(at: dest) {
+                do {
+                    try verifySHA256(of: dest, expected: file.sha256, label: file.filename)
+                    let fileProgress = Double(index + 1) / Double(totalFiles)
+                    reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(file.filename)...")
+                    continue
+                } catch {
+                    try? fm.removeItem(at: dest)
+                }
             }
 
             let baseProgress = Double(index) / Double(totalFiles)
             let stepWeight = 1.0 / Double(totalFiles)
 
-            reportStep(.downloadingModel, progress: baseProgress, status: "Downloading \(filename)...")
+            reportStep(.downloadingModel, progress: baseProgress, status: "Downloading \(file.filename)...")
 
             let tmpPath = try await downloadFile(
-                from: url,
+                from: file.url,
                 stepWeight: stepWeight,
                 baseProgress: baseProgress
             )
 
-            try fm.moveItem(at: tmpPath, to: dest)
-            log("[PythonBackendManager] Downloaded \(filename)")
+            do {
+                try verifySHA256(of: tmpPath, expected: file.sha256, label: file.filename)
+                try fm.moveItem(at: tmpPath, to: dest)
+                log("[PythonBackendManager] Downloaded \(file.filename)")
+            } catch {
+                try? fm.removeItem(at: tmpPath)
+                throw error
+            }
         }
 
+        try writeModelVerificationMarker()
         reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
     }
 
@@ -226,11 +291,7 @@ final class PythonBackendManager: NSObject {
         let process = Process()
         process.executableURL = Self.pythonBinary
         process.arguments = [scriptURL.path]
-        process.environment = [
-            "MACSTRAL_ENV_DIR": Self.envDir.path,
-            "MACSTRAL_MODEL_DIR": Self.modelDir.path,
-            "PATH": Self.pythonBinary.deletingLastPathComponent().path,
-        ]
+        process.environment = processEnvironment(includePythonInPath: true)
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -305,6 +366,125 @@ final class PythonBackendManager: NSObject {
             let task = downloadSession.downloadTask(with: url)
             task.resume()
         }
+    }
+
+    private func isPythonRuntimeReady() -> Bool {
+        guard FileManager.default.fileExists(atPath: Self.pythonBinary.path) else {
+            return false
+        }
+        do {
+            let (status, _) = try runProcess(
+                executableURL: Self.pythonBinary,
+                arguments: ["--version"],
+                environment: processEnvironment(includePythonInPath: true)
+            )
+            return status == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func areDependenciesReady() -> Bool {
+        guard FileManager.default.fileExists(atPath: Self.envDir.path) else {
+            return false
+        }
+        do {
+            let (status, _) = try runProcess(
+                executableURL: Self.pythonBinary,
+                arguments: [
+                    "-c",
+                    "import os, sys; sys.path.insert(0, os.environ['MACSTRAL_ENV_DIR']); import mlx_audio, websockets",
+                ],
+                environment: processEnvironment(includePythonInPath: true)
+            )
+            return status == 0
+        } catch {
+            return false
+        }
+    }
+
+    private func isModelReady() -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: Self.modelVerificationMarker.path) else {
+            return false
+        }
+        for file in Self.modelFiles {
+            let path = Self.modelDir.appendingPathComponent(file.filename)
+            if !isNonEmptyFile(at: path) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isNonEmptyFile(at url: URL) -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return false }
+        guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber else {
+            return false
+        }
+        return size.int64Value > 0
+    }
+
+    private func writeModelVerificationMarker() throws {
+        try "verified".write(to: Self.modelVerificationMarker, atomically: true, encoding: .utf8)
+    }
+
+    private func verifySHA256(of fileURL: URL, expected: String, label: String) throws {
+        let actual = try sha256(of: fileURL)
+        guard actual == expected else {
+            throw SetupError.checksumMismatch("\(label) expected \(expected), got \(actual)")
+        }
+    }
+
+    private func sha256(of fileURL: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        var hash = SHA256()
+        while true {
+            let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+            if chunk.isEmpty {
+                break
+            }
+            hash.update(data: chunk)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func processEnvironment(includePythonInPath: Bool) -> [String: String] {
+        var env = ProcessInfo.processInfo.environment
+        env["MACSTRAL_ENV_DIR"] = Self.envDir.path
+        env["MACSTRAL_MODEL_DIR"] = Self.modelDir.path
+        if includePythonInPath {
+            let pythonBinDir = Self.pythonBinary.deletingLastPathComponent().path
+            if let currentPath = env["PATH"], !currentPath.isEmpty {
+                env["PATH"] = "\(pythonBinDir):\(currentPath)"
+            } else {
+                env["PATH"] = pythonBinDir
+            }
+        }
+        return env
+    }
+
+    private func runProcess(
+        executableURL: URL,
+        arguments: [String],
+        environment: [String: String]? = nil
+    ) throws -> (Int32, String) {
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.environment = environment
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = outputPipe
+        try process.run()
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let output = String(data: outputData, encoding: .utf8) ?? ""
+        return (process.terminationStatus, output)
     }
 
     // MARK: - Reporting
@@ -393,17 +573,21 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
 enum SetupError: LocalizedError {
     case extractionFailed(String)
     case pipInstallFailed(String)
+    case pythonValidationFailed(String)
     case missingResource(String)
     case serverStartFailed(String)
     case downloadFailed(String)
+    case checksumMismatch(String)
 
     var errorDescription: String? {
         switch self {
         case .extractionFailed(let msg): return "Extraction failed: \(msg)"
         case .pipInstallFailed(let msg): return "Dependency install failed: \(msg)"
+        case .pythonValidationFailed(let msg): return "Python runtime validation failed: \(msg)"
         case .missingResource(let msg): return msg
         case .serverStartFailed(let msg): return "Server start failed: \(msg)"
         case .downloadFailed(let msg): return "Download failed: \(msg)"
+        case .checksumMismatch(let msg): return "Checksum mismatch: \(msg)"
         }
     }
 }

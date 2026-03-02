@@ -64,8 +64,9 @@ class AccessibilityTextInserter {
             return false
         }
 
-        // Safe cast: the returned CFTypeRef is an AXUIElement.
-        let focusedElement = focusedElementRef as! AXUIElement // swiftlint:disable:this force_cast
+        guard let focusedElement = focusedElementRef as? AXUIElement else {
+            return false
+        }
 
         // 4. Read the current value of the focused element.
         var currentValueRef: CFTypeRef?

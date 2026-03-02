@@ -131,6 +131,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.finishDictation()
             }
         }
+
+        webSocketClient.onDisconnect = { [weak self] in
+            self?.handleWebSocketDisconnect()
+        }
     }
 
     private func handleSessionCreated() {
@@ -154,6 +158,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             print("[Dictation] Failed to start audio capture: \(error)")
             finishDictation()
+        }
+    }
+
+    private func handleWebSocketDisconnect() {
+        if isStartingDictation || appState.dictationStatus != .idle {
+            isStartingDictation = false
+            audioManager.stopCapture()
+            hudPanel?.hide()
+            appState.dictationStatus = .idle
         }
     }
 
@@ -216,8 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishDictation() {
         isStartingDictation = false
         audioManager.stopCapture()
-        webSocketClient.disconnect()
         hudPanel?.hide()
         appState.dictationStatus = .idle
+        webSocketClient.disconnect()
     }
 }
