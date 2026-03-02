@@ -40,11 +40,14 @@ final class PythonBackendManager: NSObject {
         #endif
     }()
 
+    /// Pinned to a specific commit hash to ensure reproducible, supply-chain-safe downloads.
+    private static let modelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
+
     private static let modelFiles: [(String, String)] = [
-        ("config.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/config.json"),
-        ("model.safetensors", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/model.safetensors"),
-        ("model.safetensors.index.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/model.safetensors.index.json"),
-        ("tekken.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/tekken.json"),
+        ("config.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/config.json"),
+        ("model.safetensors", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors"),
+        ("model.safetensors.index.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors.index.json"),
+        ("tekken.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/tekken.json"),
     ]
 
     // MARK: - Public Callbacks
@@ -87,6 +90,13 @@ final class PythonBackendManager: NSObject {
         currentSetupToken = setupToken
 
         do {
+            // Fail fast on Intel Macs: MLX only supports Apple Silicon.
+            #if !arch(arm64)
+            throw SetupError.unsupportedArchitecture(
+                "This app requires Apple Silicon (arm64). MLX does not support Intel Macs."
+            )
+            #endif
+
             try checkSetupValidity(setupToken)
             try await setupPython()
             try checkSetupValidity(setupToken)
@@ -254,9 +264,14 @@ final class PythonBackendManager: NSObject {
         try Task.checkCancellation()
         let fm = FileManager.default
 
-        // Check if all required model files are already present.
+        // Check if all required model files are already present and non-empty.
         let allFilesExist = Self.modelFiles.allSatisfy { (filename, _) in
-            fm.fileExists(atPath: Self.modelDir.appendingPathComponent(filename).path)
+            let filePath = Self.modelDir.appendingPathComponent(filename).path
+            guard fm.fileExists(atPath: filePath),
+                  let attrs = try? fm.attributesOfItem(atPath: filePath),
+                  let size = attrs[.size] as? Int64
+            else { return false }
+            return size > 0
         }
         if allFilesExist {
             log("[PythonBackendManager] Model already downloaded.")
@@ -591,6 +606,7 @@ enum SetupError: LocalizedError {
     case serverStartFailed(String)
     case downloadFailed(String)
     case checksumMismatch(String)
+    case unsupportedArchitecture(String)
 
     var errorDescription: String? {
         switch self {
@@ -600,6 +616,7 @@ enum SetupError: LocalizedError {
         case .serverStartFailed(let msg): return "Server start failed: \(msg)"
         case .downloadFailed(let msg): return "Download failed: \(msg)"
         case .checksumMismatch(let msg): return "Checksum verification failed: \(msg)"
+        case .unsupportedArchitecture(let msg): return "Unsupported architecture: \(msg)"
         }
     }
 }
