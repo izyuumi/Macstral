@@ -18,6 +18,7 @@ class WebSocketClient: NSObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
     private var isConnected = false
+    private var isConnecting = false
 
     var hasActiveSession: Bool { isConnected }
 
@@ -25,7 +26,7 @@ class WebSocketClient: NSObject {
 
     /// Connects to the Voxtral WebSocket server at the given URL.
     func connect(to url: URL? = nil) {
-        guard !isConnected else { return }
+        guard !isConnected, !isConnecting else { return }
         guard let url else {
             onError?(WebSocketError.noServerURL)
             return
@@ -38,21 +39,21 @@ class WebSocketClient: NSObject {
         self.webSocketTask = task
         task.resume()
 
-        isConnected = true
-        onSessionCreated?()
+        isConnecting = true
         receiveMessages()
     }
 
     /// Disconnect and clean up.
     func disconnect() {
-        guard isConnected || webSocketTask != nil else { return }
-        let wasConnected = isConnected
+        guard isConnected || isConnecting || webSocketTask != nil else { return }
+        let wasActive = isConnected || isConnecting
         isConnected = false
+        isConnecting = false
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        if wasConnected {
+        if wasActive {
             onDisconnect?()
         }
     }
@@ -86,11 +87,11 @@ class WebSocketClient: NSObject {
     // MARK: - Receive Loop
 
     private func receiveMessages() {
-        guard let task = webSocketTask, isConnected else { return }
+        guard let task = webSocketTask, isConnected || isConnecting else { return }
 
         task.receive { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self, self.isConnected else { return }
+                guard let self, self.isConnected || self.isConnecting else { return }
 
                 switch result {
                 case .success(let message):
@@ -98,10 +99,13 @@ class WebSocketClient: NSObject {
                     self.receiveMessages()
 
                 case .failure(let error):
-                    let wasConnected = self.isConnected
+                    let wasActive = self.isConnected || self.isConnecting
                     self.isConnected = false
+                    self.isConnecting = false
                     self.webSocketTask = nil
-                    if wasConnected {
+                    self.urlSession?.invalidateAndCancel()
+                    self.urlSession = nil
+                    if wasActive {
                         self.onError?(error)
                         self.onDisconnect?()
                     }
@@ -145,13 +149,29 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
     nonisolated func urlSession(
         _ session: URLSession,
         webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocolName: String?
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self, self.isConnecting || self.isConnected else { return }
+            self.isConnecting = false
+            self.isConnected = true
+            self.onSessionCreated?()
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
         Task { @MainActor [weak self] in
-            guard let self, self.isConnected else { return }
+            guard let self, self.isConnected || self.isConnecting else { return }
             self.isConnected = false
+            self.isConnecting = false
             self.webSocketTask = nil
+            self.urlSession?.invalidateAndCancel()
+            self.urlSession = nil
             self.onDisconnect?()
         }
     }

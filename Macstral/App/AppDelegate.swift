@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
     private var setupTask: Task<Void, Never>?
+    private var isHotkeyPressed = false
+    private var isStartingDictation = false
 
     // MARK: - App Lifecycle
 
@@ -37,6 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         setupTask?.cancel()
+        audioManager.stopCapture()
+        webSocketClient.disconnect()
         hotkeyManager.teardown()
         backendManager.stop()
     }
@@ -47,8 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.hasMicPermission = PermissionChecker.checkMicrophonePermission()
         appState.hasAccessibilityPermission = PermissionChecker.checkAccessibilityPermission()
 
-        let allGranted = appState.hasMicPermission && appState.hasAccessibilityPermission && appState.isVoxtralReady
-        appState.isOnboardingNeeded = !allGranted
+        let hasRequiredPermissions = appState.hasMicPermission && appState.hasAccessibilityPermission
+        appState.isOnboardingNeeded = !hasRequiredPermissions
     }
 
     // MARK: - Onboarding
@@ -106,8 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupWebSocketCallbacks() {
         webSocketClient.onSessionCreated = { [weak self] in
-            print("[WebSocket] Session created")
-            self?.appState.dictationStatus = .listening
+            self?.handleSessionCreated()
         }
 
         webSocketClient.onTranscriptDelta = { [weak self] transcript in
@@ -124,9 +127,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         webSocketClient.onError = { [weak self] error in
             print("[WebSocket] Error: \(error.localizedDescription)")
-            if self?.appState.dictationStatus != .idle {
+            if self?.isStartingDictation == true || self?.appState.dictationStatus != .idle {
                 self?.finishDictation()
             }
+        }
+    }
+
+    private func handleSessionCreated() {
+        print("[WebSocket] Session created")
+        guard isStartingDictation else { return }
+        guard isHotkeyPressed else {
+            finishDictation()
+            return
+        }
+
+        appState.dictationStatus = .listening
+
+        if hudPanel == nil {
+            hudPanel = DictationHUDPanel(appState: appState)
+        }
+        hudPanel?.show()
+
+        do {
+            try audioManager.startCapture()
+            isStartingDictation = false
+        } catch {
+            print("[Dictation] Failed to start audio capture: \(error)")
+            finishDictation()
         }
     }
 
@@ -142,9 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupHotkey() {
         hotkeyManager.onKeyDown = { [weak self] in
+            self?.isHotkeyPressed = true
             self?.startDictation()
         }
         hotkeyManager.onKeyUp = { [weak self] in
+            self?.isHotkeyPressed = false
             self?.stopDictation()
         }
         hotkeyManager.setup()
@@ -158,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard appState.dictationStatus == .idle else { return }
+        guard !isStartingDictation else { return }
         guard let port = backendManager.serverPort else {
             print("[Dictation] No server port available.")
             return
@@ -167,27 +197,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.finalTranscript = ""
 
         let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+        isStartingDictation = true
         webSocketClient.connect(to: serverURL)
-        guard webSocketClient.hasActiveSession else { return }
-
-        appState.dictationStatus = .listening
-
-        if hudPanel == nil {
-            hudPanel = DictationHUDPanel(appState: appState)
-        }
-        hudPanel?.show()
-
-        do {
-            try audioManager.startCapture()
-        } catch {
-            print("[Dictation] Failed to start audio capture: \(error)")
-            webSocketClient.disconnect()
-            appState.dictationStatus = .idle
-            hudPanel?.hide()
-        }
     }
 
     private func stopDictation() {
+        if isStartingDictation {
+            finishDictation()
+            return
+        }
         guard appState.dictationStatus == .listening else { return }
 
         audioManager.stopCapture()
@@ -196,6 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishDictation() {
+        isStartingDictation = false
+        audioManager.stopCapture()
         webSocketClient.disconnect()
         hudPanel?.hide()
         appState.dictationStatus = .idle

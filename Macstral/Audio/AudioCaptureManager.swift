@@ -21,6 +21,7 @@ final class AudioCaptureManager {
     )!
 
     private var converter: AVAudioConverter?
+    private var isCapturing = false
 
     /// ~0.3 s worth of samples at 16 kHz.
     private let tapBufferSize: AVAudioFrameCount = 4_800
@@ -29,12 +30,13 @@ final class AudioCaptureManager {
 
     /// Sets up the audio engine, installs a tap on the input node, and starts capturing.
     func startCapture() throws {
+        guard !isCapturing else { return }
         let inputNode = engine.inputNode
         let hardwareFormat = inputNode.outputFormat(forBus: 0)
 
         guard let conv = AVAudioConverter(from: hardwareFormat, to: outputFormat) else {
             print("[AudioCaptureManager] Failed to create AVAudioConverter from \(hardwareFormat) to \(outputFormat).")
-            return
+            throw AudioCaptureError.converterCreationFailed
         }
         converter = conv
 
@@ -50,15 +52,24 @@ final class AudioCaptureManager {
         }
 
         engine.prepare()
-        try engine.start()
-        print("[AudioCaptureManager] Engine started.")
+        do {
+            try engine.start()
+            isCapturing = true
+            print("[AudioCaptureManager] Engine started.")
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            converter = nil
+            throw error
+        }
     }
 
     /// Removes the tap and stops the audio engine.
     func stopCapture() {
+        guard isCapturing else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
+        isCapturing = false
         print("[AudioCaptureManager] Engine stopped.")
     }
 
@@ -119,5 +130,16 @@ final class AudioCaptureManager {
         let data = Data(bytes: int16ChannelData[0], count: byteCount)
 
         onAudioChunk?(data)
+    }
+}
+
+enum AudioCaptureError: LocalizedError {
+    case converterCreationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .converterCreationFailed:
+            return "Unable to create audio converter."
+        }
     }
 }
