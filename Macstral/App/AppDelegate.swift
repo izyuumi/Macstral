@@ -142,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         webSocketClient.onTranscriptDelta = { [weak self] transcript in
             guard let self else { return }
+            print("[Dictation] onTranscriptDelta: \"\(transcript.prefix(80))\"")
             if !transcript.isEmpty {
                 self.latestTranscript = transcript
             }
@@ -152,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.isCommitInFlight = false
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("[Dictation] onTranscriptDone: \"\(trimmed.prefix(80))\" status=\(self.appState.dictationStatus) finalCommitReq=\(self.isFinalCommitRequested) bufferedBytes=\(self.sessionBufferedAudioBytes)")
             if !trimmed.isEmpty {
                 self.latestTranscript = trimmed
             }
@@ -161,15 +163,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if self.isFinalCommitRequested,
                    self.sessionBufferedAudioBytes > 0,
                    self.requestCommit(force: true) {
+                    print("[Dictation] Re-committing remaining audio")
                     return
                 }
                 let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appState.finalTranscript = finalText
                 if !finalText.isEmpty {
+                    print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
                     self.appState.dictationStatus = .inserting
                     self.textInserter.insertText(finalText)
+                } else {
+                    print("[Dictation] WARNING: finalText is empty, nothing to insert. latestTranscript=\"\(self.latestTranscript)\"")
                 }
                 self.finishDictation()
+            } else {
+                print("[Dictation] onTranscriptDone ignored: status is \(self.appState.dictationStatus), not .processing")
             }
         }
 
@@ -182,8 +190,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         webSocketClient.onDisconnect = { [weak self] in
             guard let self else { return }
+            print("[WebSocket] onDisconnect: isFinishing=\(self.isFinishingDictation) status=\(self.appState.dictationStatus)")
             guard !self.isFinishingDictation else { return }
             guard self.appState.dictationStatus != .idle else { return }
+            print("[WebSocket] Unexpected disconnect during dictation — finishing")
             self.finishDictation()
         }
     }
@@ -196,10 +206,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private var audioChunkCount = 0
     private func handleAudioChunk(_ data: Data) {
         guard appState.dictationStatus == .listening || appState.dictationStatus == .processing else { return }
         if webSocketClient.sendAudioChunk(data) {
             sessionBufferedAudioBytes += data.count
+            audioChunkCount += 1
+            if audioChunkCount == 1 || audioChunkCount % 20 == 0 {
+                print("[Dictation] Audio chunk #\(audioChunkCount): \(data.count) bytes, total buffered=\(sessionBufferedAudioBytes)")
+            }
         }
     }
 
@@ -244,6 +259,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dictationStartedAt = 0
         isAudioCaptureActive = false
         isFinishingDictation = false
+        audioChunkCount = 0
 
         if hudPanel == nil {
             hudPanel = DictationHUDPanel(appState: appState)
@@ -252,25 +268,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
         webSocketClient.connect(to: serverURL)
-        liveCommitTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: self.liveCommitIntervalNs)
-                guard self.appState.dictationStatus == .listening else { continue }
-                _ = self.requestCommit(force: false)
-            }
-        }
+        // No live commits while listening — transcribe all audio in one shot when
+        // the user releases the hotkey.  This avoids paying the ~1.4 s encoder +
+        // prefill overhead on every partial commit and lets the model process the
+        // full utterance at once, which is significantly faster for the 4B model.
         // Audio capture is started in onSessionCreated, after the WebSocket handshake completes.
     }
 
     private func stopDictation() {
-        guard appState.dictationStatus == .listening else { return }
-        guard isAudioCaptureActive else { return }
+        guard appState.dictationStatus == .listening else {
+            print("[Dictation] stopDictation: ignored, status=\(appState.dictationStatus)")
+            return
+        }
+        guard isAudioCaptureActive else {
+            print("[Dictation] stopDictation: ignored, audio capture not active")
+            return
+        }
         let heldFor = ProcessInfo.processInfo.systemUptime - dictationStartedAt
         if heldFor < minimumKeyHoldToStopSeconds {
+            print("[Dictation] stopDictation: ignored, held too briefly (\(heldFor)s)")
             return
         }
 
+        print("[Dictation] stopDictation: stopping audio, bufferedBytes=\(sessionBufferedAudioBytes) commitInFlight=\(isCommitInFlight)")
         audioManager.stopCapture()
         isAudioCaptureActive = false
         appState.dictationStatus = .processing
@@ -281,8 +301,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopCommitTask = Task { @MainActor [weak self] in
             guard let self else { return }
             try? await Task.sleep(nanoseconds: 60_000_000)
-            guard self.appState.dictationStatus == .processing else { return }
+            guard self.appState.dictationStatus == .processing else {
+                print("[Dictation] stopCommitTask: status changed to \(self.appState.dictationStatus), skipping")
+                return
+            }
+            print("[Dictation] stopCommitTask: firing after 60ms delay")
             if !self.requestCommit(force: true) {
+                print("[Dictation] stopCommitTask: requestCommit failed, finishing dictation")
                 self.finishDictation()
             }
         }
@@ -311,16 +336,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestCommit(force: Bool) -> Bool {
-        guard webSocketClient.hasActiveSession else { return false }
-        guard !isCommitInFlight else { return true }
+        guard webSocketClient.hasActiveSession else {
+            print("[Dictation] requestCommit(force=\(force)): no active session")
+            return false
+        }
+        guard !isCommitInFlight else {
+            print("[Dictation] requestCommit(force=\(force)): commit already in flight")
+            return true
+        }
         if !force && sessionBufferedAudioBytes < liveCommitMinimumAudioBytes {
             return true
         }
         if webSocketClient.sendCommit() {
+            print("[Dictation] requestCommit(force=\(force)): sent commit, bufferedBytes=\(sessionBufferedAudioBytes)")
             isCommitInFlight = true
             sessionBufferedAudioBytes = 0
             return true
         }
+        print("[Dictation] requestCommit(force=\(force)): sendCommit() failed")
         return false
     }
 }

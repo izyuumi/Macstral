@@ -48,7 +48,6 @@ final class PythonBackendManager: NSObject {
         ("model.safetensors", quantizedModelFileURL(filename: "model.safetensors")),
         ("model.safetensors.index.json", quantizedModelFileURL(filename: "model.safetensors.index.json")),
         ("tekken.json", quantizedModelFileURL(filename: "tekken.json")),
-        ("preprocessor_config.json", voxtralMiniFileURL(filename: "preprocessor_config.json")),
     ]
 
     private static func quantizedModelFileURL(filename: String) -> URL {
@@ -121,7 +120,9 @@ final class PythonBackendManager: NSObject {
             try checkSetupValidity(setupToken)
             try await installDeps()
             try checkSetupValidity(setupToken)
-            try await downloadModel()
+            // Model download is handled by voxmlx.load_model() during server startup.
+            // Skip the manual downloadModel() step.
+            reportStep(.downloadingModel, progress: 1.0, status: "Model managed by voxmlx")
             try checkSetupValidity(setupToken)
             try await launchServer()
             try checkSetupValidity(setupToken)
@@ -236,25 +237,12 @@ final class PythonBackendManager: NSObject {
         let pythonBinaryPath = Self.pythonBinary.path
         let envDirPath = Self.envDir.path
 
-        let dependencyMarkers = [
-            Self.envDir.appendingPathComponent("mlx_audio"),
-            Self.envDir.appendingPathComponent("websockets"),
-            Self.envDir.appendingPathComponent("transformers"),
-        ]
-        let dependenciesReady = dependencyMarkers.allSatisfy { marker in
-            fm.fileExists(atPath: marker.path)
-        }
-        let hasVoxtralTransformersSupport: Bool
-        if dependenciesReady {
-            hasVoxtralTransformersSupport = try await supportsVoxtralRealtimeTransformers(
-                pythonBinaryPath: pythonBinaryPath,
-                envDirPath: envDirPath
-            )
-        } else {
-            hasVoxtralTransformersSupport = false
-        }
-
-        if dependenciesReady && hasVoxtralTransformersSupport {
+        // A stamp file records which dependency set is installed. When the pinned
+        // commit changes, the stamp won't match and we'll reinstall.
+        let depsStamp = Self.envDir.appendingPathComponent(".macstral_deps_stamp")
+        let expectedStamp = "voxmlx-tomsilver+websockets==15.0.1"
+        let currentStamp = (try? String(contentsOf: depsStamp, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentStamp == expectedStamp {
             log("[PythonBackendManager] Dependencies already installed.")
             reportStep(.installingDeps, progress: 1.0, status: "Dependencies ready")
             return
@@ -264,13 +252,10 @@ final class PythonBackendManager: NSObject {
 
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
-        var packages = [
-            "mlx-audio[stt]==0.3.1",
+        let packages = [
+            "voxmlx @ git+https://github.com/T0mSIlver/voxmlx.git",
             "websockets==15.0.1",
         ]
-        if !hasVoxtralTransformersSupport {
-            packages.append("transformers==5.0.0rc3")
-        }
 
         let (pipStatus, pipOutput): (Int32, Data) = try await Task.detached {
             let pip = Process()
@@ -296,6 +281,7 @@ final class PythonBackendManager: NSObject {
             throw SetupError.pipInstallFailed("pip exited with status \(pipStatus): \(output)")
         }
 
+        try expectedStamp.write(to: depsStamp, atomically: true, encoding: .utf8)
         log("[PythonBackendManager] Dependencies installed.")
         reportStep(.installingDeps, progress: 1.0, status: "Dependencies ready")
     }
@@ -414,7 +400,7 @@ final class PythonBackendManager: NSObject {
                 return try await self.waitForServerPort(stdoutPipe: stdoutPipe)
             }
             group.addTask {
-                try await Task.sleep(nanoseconds: 120_000_000_000)
+                try await Task.sleep(nanoseconds: 600_000_000_000)
                 throw SetupError.serverStartFailed("Timed out waiting for Voxtral server to become ready.")
             }
             let resolvedPort = try await group.next() ?? 0
@@ -471,31 +457,6 @@ final class PythonBackendManager: NSObject {
             throw CancellationError()
         }
         try Task.checkCancellation()
-    }
-
-    private func supportsVoxtralRealtimeTransformers(
-        pythonBinaryPath: String,
-        envDirPath: String
-    ) async throws -> Bool {
-        try await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: pythonBinaryPath)
-            process.arguments = [
-                "-c",
-                "import sys; sys.path.insert(0, '\(envDirPath)'); from transformers.models.auto.configuration_auto import CONFIG_MAPPING; print('voxtral_realtime' in CONFIG_MAPPING.keys())",
-            ]
-            let outputPipe = Pipe()
-            process.standardOutput = outputPipe
-            process.standardError = Pipe()
-            try process.run()
-            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return false }
-            let output = String(data: data, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            return output == "true"
-        }.value
     }
 
     private func cancelActiveDownload() {

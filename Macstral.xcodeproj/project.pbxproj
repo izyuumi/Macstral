@@ -18,16 +18,7 @@
 		71F081322F536BB2002241FA /* Exceptions for "Macstral" folder in "Macstral" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				App/CLAUDE.md,
-				Audio/CLAUDE.md,
-				Backend/CLAUDE.md,
-				CLAUDE.md,
-				Hotkey/CLAUDE.md,
 				Info.plist,
-				Network/CLAUDE.md,
-				TextInsertion/CLAUDE.md,
-				UI/CLAUDE.md,
-				Utilities/CLAUDE.md,
 			);
 			target = 71F0811D2F536BB1002241FA /* Macstral */;
 		};
