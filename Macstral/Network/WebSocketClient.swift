@@ -37,9 +37,8 @@ class WebSocketClient: NSObject {
 
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
-        task.resume()
-
         isConnecting = true
+        task.resume()
         receiveMessages()
     }
 
