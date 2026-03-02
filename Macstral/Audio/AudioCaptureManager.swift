@@ -77,23 +77,17 @@ final class AudioCaptureManager {
 
     private func handleTapBuffer(_ inputBuffer: AVAudioPCMBuffer) {
         guard let converter else { return }
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: true
-        ) else { return }
+        let targetFormat = outputFormat
 
-        // Calculate the expected output frame count after sample-rate conversion.
         let inputFrameCount = inputBuffer.frameLength
         let inputSampleRate = inputBuffer.format.sampleRate
-        let outputSampleRate = outputFormat.sampleRate
+        let outputSampleRate = targetFormat.sampleRate
         let outputFrameCapacity = AVAudioFrameCount(
             ceil(Double(inputFrameCount) * outputSampleRate / inputSampleRate)
         )
 
         guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
+            pcmFormat: targetFormat,
             frameCapacity: outputFrameCapacity
         ) else {
             print("[AudioCaptureManager] Failed to allocate output PCM buffer.")
@@ -123,7 +117,6 @@ final class AudioCaptureManager {
             return
         }
 
-        // Extract raw bytes from the Int16 interleaved buffer.
         guard let int16ChannelData = outputBuffer.int16ChannelData else { return }
         let frameLength = Int(outputBuffer.frameLength)
         let byteCount = frameLength * MemoryLayout<Int16>.size

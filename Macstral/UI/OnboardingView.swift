@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 
 struct OnboardingView: View {
@@ -89,11 +88,10 @@ struct OnboardingView: View {
     // MARK: - Actions
 
     private func requestMicrophonePermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            Task { @MainActor in
-                appState.hasMicPermission = granted
-                onPermissionStateChanged?()
-            }
+        Task { @MainActor in
+            let granted = await PermissionChecker.requestMicrophonePermission()
+            appState.hasMicPermission = granted
+            onPermissionStateChanged?()
         }
     }
 

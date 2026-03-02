@@ -58,7 +58,12 @@ final class StatusBarController {
         case .ready:
             label = "Ready"
         case .error(let message):
-            label = "Error: \(message)"
+            let compact = message.replacingOccurrences(of: "\n", with: " ")
+            if compact.count > 60 {
+                label = "Error: \(compact.prefix(57))..."
+            } else {
+                label = "Error: \(compact)"
+            }
         }
         statusMenuItem.title = "Status: \(label)"
     }
