@@ -19,12 +19,16 @@ enum DictationStatus: Equatable {
     case inserting
 }
 
-enum ModelPreparationStatus: Equatable {
-    case unknown
-    case checking
-    case preparing
+// MARK: - SetupStep
+
+enum SetupStep: Equatable {
+    case idle
+    case downloadingPython
+    case installingDeps
+    case downloadingModel
+    case launching
     case ready
-    case unavailable(String)
+    case error(String)
 }
 
 // MARK: - AppState
@@ -36,6 +40,12 @@ final class AppState {
 
     var backendStatus: BackendStatus = .stopped
 
+    // MARK: Voxtral Setup
+
+    var setupStep: SetupStep = .idle
+    var setupProgress: Double = 0.0
+    var setupStatusText: String = ""
+
     // MARK: Dictation
 
     var dictationStatus: DictationStatus = .idle
@@ -46,12 +56,10 @@ final class AppState {
 
     var isOnboardingNeeded: Bool = true
     var hasMicPermission: Bool = false
-    var hasSpeechPermission: Bool = false
     var hasAccessibilityPermission: Bool = false
-    var modelPreparationStatus: ModelPreparationStatus = .unknown
 
-    var isModelReadyForUse: Bool {
-        if case .ready = modelPreparationStatus {
+    var isVoxtralReady: Bool {
+        if case .ready = setupStep {
             return true
         }
         return false

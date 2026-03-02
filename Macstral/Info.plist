@@ -6,7 +6,5 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Macstral needs microphone access to capture your voice for dictation.</string>
-	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Macstral needs speech recognition access to transcribe your voice locally.</string>
 </dict>
 </plist>

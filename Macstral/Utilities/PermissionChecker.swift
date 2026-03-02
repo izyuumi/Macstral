@@ -1,6 +1,5 @@
 import AVFAudio
 import ApplicationServices
-import Speech
 
 enum PermissionChecker {
 
@@ -10,18 +9,6 @@ enum PermissionChecker {
 
     static func requestMicrophonePermission() async -> Bool {
         return await AVAudioApplication.requestRecordPermission()
-    }
-
-    static func checkSpeechPermission() -> Bool {
-        return SFSpeechRecognizer.authorizationStatus() == .authorized
-    }
-
-    static func requestSpeechPermission() async -> Bool {
-        await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status == .authorized)
-            }
-        }
     }
 
     static func checkAccessibilityPermission() -> Bool {

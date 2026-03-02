@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
-    private var modelPreparationTask: Task<Void, Never>?
+    private var setupTask: Task<Void, Never>?
 
     // MARK: - App Lifecycle
 
@@ -27,17 +27,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkey()
 
         checkPermissions()
-        refreshModelPreparationStatus()
 
         if appState.isOnboardingNeeded {
             showOnboarding()
         } else {
-            startBackend()
+            startVoxtralSetup()
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        modelPreparationTask?.cancel()
+        setupTask?.cancel()
         hotkeyManager.teardown()
         backendManager.stop()
     }
@@ -46,78 +45,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkPermissions() {
         appState.hasMicPermission = PermissionChecker.checkMicrophonePermission()
-        appState.hasSpeechPermission = PermissionChecker.checkSpeechPermission()
         appState.hasAccessibilityPermission = PermissionChecker.checkAccessibilityPermission()
 
-        let allGranted = appState.hasMicPermission && appState.hasSpeechPermission && appState.hasAccessibilityPermission
+        let allGranted = appState.hasMicPermission && appState.hasAccessibilityPermission && appState.isVoxtralReady
         appState.isOnboardingNeeded = !allGranted
     }
 
     // MARK: - Onboarding
 
     private func showOnboarding() {
+        // Start Voxtral setup immediately during onboarding
+        startVoxtralSetup()
+
         onboardingWindow = OnboardingWindow(
             appState: appState,
             onPermissionStateChanged: { [weak self] in
-                guard let self else { return }
-                self.checkPermissions()
-                self.refreshModelPreparationStatus()
+                self?.checkPermissions()
             },
             onComplete: { [weak self] in
-            guard let self else { return }
-            self.appState.isOnboardingNeeded = false
-            self.onboardingWindow = nil
-            self.startBackend()
+                guard let self else { return }
+                self.appState.isOnboardingNeeded = false
+                self.onboardingWindow = nil
             }
         )
         onboardingWindow?.show()
     }
 
-    private func refreshModelPreparationStatus() {
-        modelPreparationTask?.cancel()
+    // MARK: - Voxtral Setup
 
-        guard appState.hasSpeechPermission else {
-            appState.modelPreparationStatus = .unknown
-            return
-        }
-
-        appState.modelPreparationStatus = .checking
-        modelPreparationTask = Task { [weak self] in
+    private func startVoxtralSetup() {
+        setupTask?.cancel()
+        setupTask = Task { [weak self] in
             guard let self else { return }
-            let maxAttempts = 15
-
-            for attempt in 0..<maxAttempts {
-                if Task.isCancelled {
-                    return
-                }
-
-                switch self.webSocketClient.probeOnDeviceRecognitionAvailability() {
-                case .ready:
-                    self.appState.modelPreparationStatus = .ready
-                    return
-                case .requiresSpeechPermission:
-                    self.appState.modelPreparationStatus = .unknown
-                    return
-                case .unavailable:
-                    if attempt == maxAttempts - 1 {
-                        self.appState.modelPreparationStatus = .unavailable("On-device speech is unavailable for this Mac or language.")
-                        return
-                    }
-                    self.appState.modelPreparationStatus = .preparing
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
-            }
+            await self.backendManager.prepareAndStart()
         }
     }
 
-    // MARK: - Backend
-
-    private func startBackend() {
-        backendManager.start()
-        Task {
-            await backendManager.waitForReady()
-        }
-    }
+    // MARK: - Backend Callbacks
 
     private func setupBackendCallbacks() {
         backendManager.onStatusChange = { [weak self] status in
@@ -125,6 +89,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.appState.backendStatus = status
             self.statusBarController?.updateStatus(status)
         }
+
+        backendManager.onSetupProgress = { [weak self] step, progress, statusText in
+            guard let self else { return }
+            self.appState.setupStep = step
+            self.appState.setupProgress = progress
+            self.appState.setupStatusText = statusText
+        }
+
         backendManager.onLog = { message in
             print(message)
         }
@@ -186,11 +158,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard appState.dictationStatus == .idle else { return }
+        guard let port = backendManager.serverPort else {
+            print("[Dictation] No server port available.")
+            return
+        }
 
         appState.liveTranscript = ""
         appState.finalTranscript = ""
 
-        webSocketClient.connect()
+        let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+        webSocketClient.connect(to: serverURL)
         guard webSocketClient.hasActiveSession else { return }
 
         appState.dictationStatus = .listening
