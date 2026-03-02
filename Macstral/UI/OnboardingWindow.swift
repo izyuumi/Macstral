@@ -17,7 +17,7 @@ final class OnboardingWindow: NSWindow {
         self.onCompleteCallback = onComplete
 
         let windowSize = NSSize(width: 450, height: 470)
-        let styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
+        let styleMask: NSWindow.StyleMask = [.titled]
 
         super.init(
             contentRect: NSRect(origin: .zero, size: windowSize),

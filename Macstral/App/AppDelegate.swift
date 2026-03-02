@@ -45,6 +45,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendManager.stop()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        checkPermissions()
+        if appState.isOnboardingNeeded, onboardingWindow == nil {
+            showOnboarding()
+        }
+    }
+
     // MARK: - Permissions
 
     private func checkPermissions() {
