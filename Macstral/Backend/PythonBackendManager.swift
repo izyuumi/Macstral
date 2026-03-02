@@ -116,6 +116,7 @@ final class PythonBackendManager: NSObject {
 
     private var activeDownloadContinuation: CheckedContinuation<URL, Error>?
     private var activeDownloadTask: URLSessionDownloadTask?
+    private var activeDownloadID: UUID?
     private var activeDownloadExpectedBytes: Int64 = 0
     private var activeDownloadReceivedBytes: Int64 = 0
     private var activeDownloadStepWeight: Double = 0
@@ -159,6 +160,7 @@ final class PythonBackendManager: NSObject {
         isActive = false
         activeDownloadTask?.cancel()
         activeDownloadTask = nil
+        activeDownloadID = nil
         activeDownloadContinuation?.resume(throwing: CancellationError())
         activeDownloadContinuation = nil
         process?.terminate()
@@ -407,6 +409,7 @@ final class PythonBackendManager: NSObject {
 
     /// Downloads a file with progress tracking. Returns the local file URL.
     private func downloadFile(from url: URL, stepWeight: Double, baseProgress: Double) async throws -> URL {
+        let downloadID = UUID()
         activeDownloadStepWeight = stepWeight
         activeDownloadBaseProgress = baseProgress
         activeDownloadReceivedBytes = 0
@@ -417,13 +420,15 @@ final class PythonBackendManager: NSObject {
                 activeDownloadContinuation = continuation
                 let task = downloadSession.downloadTask(with: url)
                 activeDownloadTask = task
+                activeDownloadID = downloadID
                 task.resume()
             }
         } onCancel: { [weak self] in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.activeDownloadID == downloadID else { return }
                 self.activeDownloadTask?.cancel()
                 self.activeDownloadTask = nil
+                self.activeDownloadID = nil
                 self.activeDownloadContinuation?.resume(throwing: CancellationError())
                 self.activeDownloadContinuation = nil
             }
@@ -579,18 +584,24 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        // Move to a temp file we control (the system deletes `location` after this returns)
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         do {
             try FileManager.default.moveItem(at: location, to: tmp)
             Task { @MainActor in
+                guard activeDownloadTask?.taskIdentifier == downloadTask.taskIdentifier else {
+                    try? FileManager.default.removeItem(at: tmp)
+                    return
+                }
                 activeDownloadTask = nil
+                activeDownloadID = nil
                 activeDownloadContinuation?.resume(returning: tmp)
                 activeDownloadContinuation = nil
             }
         } catch {
             Task { @MainActor in
+                guard activeDownloadTask?.taskIdentifier == downloadTask.taskIdentifier else { return }
                 activeDownloadTask = nil
+                activeDownloadID = nil
                 activeDownloadContinuation?.resume(throwing: error)
                 activeDownloadContinuation = nil
             }
@@ -605,6 +616,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         totalBytesExpectedToWrite: Int64
     ) {
         Task { @MainActor in
+            guard activeDownloadTask?.taskIdentifier == downloadTask.taskIdentifier else { return }
             activeDownloadReceivedBytes = totalBytesWritten
             activeDownloadExpectedBytes = totalBytesExpectedToWrite
 
@@ -635,7 +647,9 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
     ) {
         if let error {
             Task { @MainActor in
+                guard activeDownloadTask?.taskIdentifier == task.taskIdentifier else { return }
                 activeDownloadTask = nil
+                activeDownloadID = nil
                 activeDownloadContinuation?.resume(throwing: error)
                 activeDownloadContinuation = nil
             }
