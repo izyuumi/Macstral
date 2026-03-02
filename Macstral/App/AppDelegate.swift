@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
+    private var modelPreparationTask: Task<Void, Never>?
 
     // MARK: - App Lifecycle
 
@@ -26,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkey()
 
         checkPermissions()
+        refreshModelPreparationStatus()
 
         if appState.isOnboardingNeeded {
             showOnboarding()
@@ -35,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        modelPreparationTask?.cancel()
         hotkeyManager.teardown()
         backendManager.stop()
     }
@@ -53,13 +56,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Onboarding
 
     private func showOnboarding() {
-        onboardingWindow = OnboardingWindow(appState: appState) { [weak self] in
+        onboardingWindow = OnboardingWindow(
+            appState: appState,
+            onPermissionStateChanged: { [weak self] in
+                guard let self else { return }
+                self.checkPermissions()
+                self.refreshModelPreparationStatus()
+            },
+            onComplete: { [weak self] in
             guard let self else { return }
             self.appState.isOnboardingNeeded = false
             self.onboardingWindow = nil
             self.startBackend()
-        }
+            }
+        )
         onboardingWindow?.show()
+    }
+
+    private func refreshModelPreparationStatus() {
+        modelPreparationTask?.cancel()
+
+        guard appState.hasSpeechPermission else {
+            appState.modelPreparationStatus = .unknown
+            return
+        }
+
+        appState.modelPreparationStatus = .checking
+        modelPreparationTask = Task { [weak self] in
+            guard let self else { return }
+            let maxAttempts = 15
+
+            for attempt in 0..<maxAttempts {
+                if Task.isCancelled {
+                    return
+                }
+
+                switch self.webSocketClient.probeOnDeviceRecognitionAvailability() {
+                case .ready:
+                    self.appState.modelPreparationStatus = .ready
+                    return
+                case .requiresSpeechPermission:
+                    self.appState.modelPreparationStatus = .unknown
+                    return
+                case .unavailable:
+                    if attempt == maxAttempts - 1 {
+                        self.appState.modelPreparationStatus = .unavailable("On-device speech is unavailable for this Mac or language.")
+                        return
+                    }
+                    self.appState.modelPreparationStatus = .preparing
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+            }
+        }
     }
 
     // MARK: - Backend

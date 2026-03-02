@@ -4,13 +4,19 @@ import SwiftUI
 final class OnboardingWindow: NSWindow {
 
     private var appState: AppState
+    private var onPermissionStateChangedCallback: (() -> Void)?
     private var onCompleteCallback: (() -> Void)?
 
-    init(appState: AppState, onComplete: (() -> Void)? = nil) {
+    init(
+        appState: AppState,
+        onPermissionStateChanged: (() -> Void)? = nil,
+        onComplete: (() -> Void)? = nil
+    ) {
         self.appState = appState
+        self.onPermissionStateChangedCallback = onPermissionStateChanged
         self.onCompleteCallback = onComplete
 
-        let windowSize = NSSize(width: 450, height: 350)
+        let windowSize = NSSize(width: 450, height: 470)
         let styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
 
         super.init(
@@ -36,6 +42,9 @@ final class OnboardingWindow: NSWindow {
     private func setupContentView() {
         let onboardingView = OnboardingView(
             appState: appState,
+            onPermissionStateChanged: { [weak self] in
+                self?.onPermissionStateChangedCallback?()
+            },
             onComplete: { [weak self] in
                 self?.onCompleteCallback?()
                 self?.close()
@@ -43,7 +52,7 @@ final class OnboardingWindow: NSWindow {
         )
         let hostingController = NSHostingController(rootView: onboardingView)
         contentViewController = hostingController
-        setContentSize(NSSize(width: 450, height: 350))
+        setContentSize(NSSize(width: 450, height: 470))
     }
 
     // MARK: - Public Interface

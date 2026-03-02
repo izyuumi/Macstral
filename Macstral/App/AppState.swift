@@ -19,6 +19,14 @@ enum DictationStatus: Equatable {
     case inserting
 }
 
+enum ModelPreparationStatus: Equatable {
+    case unknown
+    case checking
+    case preparing
+    case ready
+    case unavailable(String)
+}
+
 // MARK: - AppState
 
 @Observable
@@ -40,4 +48,12 @@ final class AppState {
     var hasMicPermission: Bool = false
     var hasSpeechPermission: Bool = false
     var hasAccessibilityPermission: Bool = false
+    var modelPreparationStatus: ModelPreparationStatus = .unknown
+
+    var isModelReadyForUse: Bool {
+        if case .ready = modelPreparationStatus {
+            return true
+        }
+        return false
+    }
 }

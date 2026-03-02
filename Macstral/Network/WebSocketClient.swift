@@ -32,6 +32,16 @@ class WebSocketClient: NSObject {
         isConnected
     }
 
+    func probeOnDeviceRecognitionAvailability() -> LocalRecognitionAvailability {
+        guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
+            return .requiresSpeechPermission
+        }
+        guard makeRecognizer() != nil else {
+            return .unavailable
+        }
+        return .ready
+    }
+
     // MARK: - Connection Management
 
     /// Starts a local recognition session. The URL parameter is ignored and preserved
@@ -170,6 +180,12 @@ class WebSocketClient: NSObject {
             onDisconnect?()
         }
     }
+}
+
+enum LocalRecognitionAvailability {
+    case ready
+    case requiresSpeechPermission
+    case unavailable
 }
 
 enum LocalTranscriptionError: LocalizedError {
