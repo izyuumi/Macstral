@@ -121,8 +121,10 @@ final class PythonBackendManager: NSObject {
             try await installDeps()
             try checkSetupValidity(setupToken)
             // Model download is handled by voxmlx.load_model() during server startup.
-            // Skip the manual downloadModel() step.
-            reportStep(.downloadingModel, progress: 1.0, status: "Model managed by voxmlx")
+            // Report the step as pending (not complete) so the UI correctly shows that the
+            // model has not been fetched yet; launchServer()/waitForServerPort will update
+            // this step as the server progresses through loading.
+            reportStep(.downloadingModel, progress: 0.0, status: "Model will be fetched by voxmlx on first launch...")
             try checkSetupValidity(setupToken)
             try await launchServer()
             try checkSetupValidity(setupToken)
@@ -523,9 +525,15 @@ final class PythonBackendManager: NSObject {
                         if trimmed == "loading_model" && !loadingModelSeen {
                             loadingModelSeen = true
                             await MainActor.run {
+                                // Model is now actively being downloaded/loaded by voxmlx.
+                                manager.reportStep(.downloadingModel, progress: 0.5, status: "Loading Voxtral model into memory...")
                                 manager.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
                             }
                         } else if let portNum = Int(trimmed), portNum > 0 {
+                            await MainActor.run {
+                                // Model fully loaded — mark the download step complete before transitioning to ready.
+                                manager.reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
+                            }
                             continuation.resume(returning: portNum)
                             return
                         }
