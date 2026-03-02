@@ -63,13 +63,16 @@ jobs:
 
       - name: Notarize
         run: |
-          xcrun notarytool submit build/export/Macstral.app \
+          ditto -c -k --sequesterRsrc --keepParent build/export/Macstral.app build/export/Macstral-notarize.zip
+          xcrun notarytool submit build/export/Macstral-notarize.zip \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --password "${{ secrets.APPLE_APP_PASSWORD }}" \
             --team-id "${{ secrets.APPLE_TEAM_ID }}" \
             --wait
           xcrun stapler staple build/export/Macstral.app
-          pushd build/export && rm -f Macstral.zip && zip -r Macstral.zip Macstral.app && popd
+          xcrun stapler validate build/export/Macstral.app
+          rm -f build/export/Macstral.zip
+          ditto -c -k --sequesterRsrc --keepParent build/export/Macstral.app build/export/Macstral.zip
 
       - name: Package
         id: package
