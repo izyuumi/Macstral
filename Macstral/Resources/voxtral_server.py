@@ -188,6 +188,13 @@ config = None
 SAMPLE_RATE = 16_000
 
 MODEL_ID = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+# If MACSTRAL_MODEL_DIR is set by the Swift launcher, use it as the Hugging Face
+# cache directory so model files are stored inside Application Support rather than
+# the default ~/.cache/huggingface location, keeping the app self-contained.
+_model_dir = os.environ.get("MACSTRAL_MODEL_DIR", "")
+if _model_dir:
+    os.environ.setdefault("HF_HOME", _model_dir)
+    os.environ.setdefault("HUGGINGFACE_HUB_CACHE", _model_dir)
 DEBUG_TRANSCRIPTION = os.environ.get("MACSTRAL_DEBUG_TRANSCRIPTION", "").lower() in {"1", "true", "yes"}
 
 
@@ -224,12 +231,15 @@ async def handle_client(websocket):
 
     async for message in websocket:
         if isinstance(message, bytes):
+            if len(message) % 2 != 0:
+                await websocket.send(json.dumps({"type": "error", "text": "Invalid PCM frame size"}))
+                continue
             now = time.perf_counter()
             if first_chunk_received_at is None:
                 first_chunk_received_at = now
             audio_f32 = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
             t0 = time.perf_counter()
-            tokens = session.feed_audio(audio_f32)
+            tokens = await asyncio.to_thread(session.feed_audio, audio_f32)
             t1 = time.perf_counter()
 
             if tokens:
@@ -258,7 +268,7 @@ async def handle_client(websocket):
             if message.strip().lower() == "commit":
                 log("[server] Received commit, finalizing session...", force=True)
                 t0 = time.perf_counter()
-                session.finalize()
+                await asyncio.to_thread(session.finalize)
                 t1 = time.perf_counter()
                 final_text = session.full_text
                 log(f"[server] finalize() took {t1-t0:.3f}s, result: \"{final_text[:80]}\"", force=True)

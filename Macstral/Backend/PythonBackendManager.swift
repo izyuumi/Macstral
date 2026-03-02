@@ -319,10 +319,17 @@ final class PythonBackendManager: NSObject {
             let dest = Self.modelDir.appendingPathComponent(filename)
 
             if fm.fileExists(atPath: dest.path) {
-                log("[PythonBackendManager] \(filename) already exists, skipping.")
-                let fileProgress = Double(index + 1) / Double(totalFiles)
-                reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(filename)...")
-                continue
+                let attrs = try? fm.attributesOfItem(atPath: dest.path)
+                let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+                if size > 0 {
+                    log("[PythonBackendManager] \(filename) already exists with valid size, skipping.")
+                    let fileProgress = Double(index + 1) / Double(totalFiles)
+                    reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(filename)...")
+                    continue
+                } else {
+                    log("[PythonBackendManager] \(filename) exists but is empty/corrupt, removing and re-downloading.")
+                    try? fm.removeItem(at: dest)
+                }
             }
 
             let baseProgress = Double(index) / Double(totalFiles)
@@ -397,18 +404,24 @@ final class PythonBackendManager: NSObject {
             }
         }
 
-        let port = try await withThrowingTaskGroup(of: Int.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { throw SetupError.serverStartFailed("Server start failed unexpectedly.") }
-                return try await self.waitForServerPort(stdoutPipe: stdoutPipe)
+        let port: Int
+        do {
+            port = try await withThrowingTaskGroup(of: Int.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { throw SetupError.serverStartFailed("Server start failed unexpectedly.") }
+                    return try await self.waitForServerPort(stdoutPipe: stdoutPipe)
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 600_000_000_000)
+                    throw SetupError.serverStartFailed("Timed out waiting for Voxtral server to become ready.")
+                }
+                let resolvedPort = try await group.next() ?? 0
+                group.cancelAll()
+                return resolvedPort
             }
-            group.addTask {
-                try await Task.sleep(nanoseconds: 600_000_000_000)
-                throw SetupError.serverStartFailed("Timed out waiting for Voxtral server to become ready.")
-            }
-            let resolvedPort = try await group.next() ?? 0
-            group.cancelAll()
-            return resolvedPort
+        } catch {
+            process.terminate()
+            throw error
         }
 
         serverPort = port
@@ -497,50 +510,56 @@ final class PythonBackendManager: NSObject {
 
     private func waitForServerPort(stdoutPipe: Pipe) async throws -> Int {
         let manager = self
-        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
-            Task.detached {
-                let handle = stdoutPipe.fileHandleForReading
-                var accumulated = Data()
-                var loadingModelSeen = false
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
+                Task.detached {
+                    let handle = stdoutPipe.fileHandleForReading
+                    var accumulated = Data()
+                    var loadingModelSeen = false
 
-                while true {
-                    let chunk = handle.availableData
-                    if chunk.isEmpty {
-                        await MainActor.run {
-                            let stderrText = manager.recentServerErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if stderrText.isEmpty {
-                                continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port."))
-                            } else {
-                                continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port. stderr: \(stderrText)"))
-                            }
-                        }
-                        return
-                    }
-                    accumulated.append(chunk)
-
-                    guard let text = String(data: accumulated, encoding: .utf8) else { continue }
-                    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-
-                    for line in lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if trimmed == "loading_model" && !loadingModelSeen {
-                            loadingModelSeen = true
+                    while !Task.isCancelled {
+                        let chunk = handle.availableData
+                        if chunk.isEmpty {
+                            if Task.isCancelled { return }
                             await MainActor.run {
-                                // Model is now actively being downloaded/loaded by voxmlx.
-                                manager.reportStep(.downloadingModel, progress: 0.5, status: "Loading Voxtral model into memory...")
-                                manager.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
+                                let stderrText = manager.recentServerErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if stderrText.isEmpty {
+                                    continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port."))
+                                } else {
+                                    continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port. stderr: \(stderrText)"))
+                                }
                             }
-                        } else if let portNum = Int(trimmed), portNum > 0 {
-                            await MainActor.run {
-                                // Model fully loaded — mark the download step complete before transitioning to ready.
-                                manager.reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
-                            }
-                            continuation.resume(returning: portNum)
                             return
+                        }
+                        accumulated.append(chunk)
+
+                        guard let text = String(data: accumulated, encoding: .utf8) else { continue }
+                        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+
+                        for line in lines {
+                            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if trimmed == "loading_model" && !loadingModelSeen {
+                                loadingModelSeen = true
+                                await MainActor.run {
+                                    // Model is now actively being downloaded/loaded by voxmlx.
+                                    manager.reportStep(.downloadingModel, progress: 0.5, status: "Loading Voxtral model into memory...")
+                                    manager.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
+                                }
+                            } else if let portNum = Int(trimmed), portNum > 0 {
+                                await MainActor.run {
+                                    // Model fully loaded — mark the download step complete before transitioning to ready.
+                                    manager.reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
+                                }
+                                continuation.resume(returning: portNum)
+                                return
+                            }
                         }
                     }
                 }
             }
+        } onCancel: {
+            // Close the file handle to unblock any pending availableData read in the detached task.
+            stdoutPipe.fileHandleForReading.closeFile()
         }
     }
 
@@ -637,6 +656,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
     ) {
         if let error {
             Task { @MainActor in
+                guard self.activeDownloadTask === task else { return }
                 self.completeActiveDownload(with: .failure(error))
             }
         }

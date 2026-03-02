@@ -200,7 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 in: &self.commitToDoneSamples
             )
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("[Dictation] onTranscriptDone: \"\(trimmed.prefix(80))\" status=\(self.appState.dictationStatus) finalCommitReq=\(self.isFinalCommitRequested) bufferedBytes=\(self.sessionBufferedAudioBytes)")
+            if self.debugTranscriptionLogging {
+                print("[Dictation] onTranscriptDone: \"\(trimmed.prefix(80))\" status=\(self.appState.dictationStatus) finalCommitReq=\(self.isFinalCommitRequested) bufferedBytes=\(self.sessionBufferedAudioBytes)")
+            } else {
+                print("[Dictation] onTranscriptDone: status=\(self.appState.dictationStatus) finalCommitReq=\(self.isFinalCommitRequested) bufferedBytes=\(self.sessionBufferedAudioBytes)")
+            }
             if !trimmed.isEmpty {
                 self.latestTranscript = trimmed
             }
@@ -216,11 +220,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appState.finalTranscript = finalText
                 if !finalText.isEmpty {
-                    print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
+                    if self.debugTranscriptionLogging {
+                        print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
+                    } else {
+                        print("[Dictation] Inserting text (\(finalText.count) chars)")
+                    }
                     self.appState.dictationStatus = .inserting
                     self.textInserter.insertText(finalText)
                 } else {
-                    print("[Dictation] WARNING: finalText is empty, nothing to insert. latestTranscript=\"\(self.latestTranscript)\"")
+                    print("[Dictation] WARNING: finalText is empty, nothing to insert.")
                 }
                 self.finishDictation()
             } else {
@@ -362,7 +370,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the user releases the hotkey.  This avoids paying the ~1.4 s encoder +
         // prefill overhead on every partial commit and lets the model process the
         // full utterance at once, which is significantly faster for the 4B model.
-        // Audio capture is started in onSessionCreated, after the WebSocket handshake completes.
+        // Audio capture is started in startDictation() before the WebSocket handshake;
+        // audio is buffered locally until the session is ready to process it.
     }
 
     private func stopDictation() {
