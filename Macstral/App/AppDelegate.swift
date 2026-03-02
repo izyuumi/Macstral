@@ -16,6 +16,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
     private var setupTask: Task<Void, Never>?
+    private var stopCommitTask: Task<Void, Never>?
+    private var liveCommitTask: Task<Void, Never>?
+    private var sessionBufferedAudioBytes = 0
+    private var latestTranscript = ""
+    private var isCommitInFlight = false
+    private var isFinalCommitRequested = false
+    private var dictationStartedAt: TimeInterval = 0
+    private var isAudioCaptureActive = false
+    private var isFinishingDictation = false
+    private let liveCommitIntervalNs: UInt64 = 400_000_000
+    private let liveCommitMinimumAudioBytes = 2_400
+    private let minimumKeyHoldToStopSeconds: TimeInterval = 0.2
 
     // MARK: - App Lifecycle
 
@@ -108,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.onSessionCreated = { [weak self] in
             guard let self else { return }
             print("[WebSocket] Session created")
+            self.isCommitInFlight = false
             // Guard against a late handshake arriving after the user cancelled dictation.
             // If dictationStatus is no longer .listening the session is stale; tear it down.
             guard self.appState.dictationStatus == .listening else {
@@ -117,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Start audio capture only after the WebSocket handshake has succeeded.
             do {
                 try self.audioManager.startCapture()
+                self.isAudioCaptureActive = true
+                self.dictationStartedAt = ProcessInfo.processInfo.systemUptime
             } catch {
                 print("[Dictation] Failed to start audio capture: \(error)")
                 self.webSocketClient.disconnect()
@@ -126,15 +141,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         webSocketClient.onTranscriptDelta = { [weak self] transcript in
-            self?.appState.liveTranscript = transcript
+            guard let self else { return }
+            if !transcript.isEmpty {
+                self.latestTranscript = transcript
+            }
+            self.appState.liveTranscript = self.latestTranscript
         }
 
         webSocketClient.onTranscriptDone = { [weak self] text in
             guard let self else { return }
-            self.appState.finalTranscript = text
-            self.appState.dictationStatus = .inserting
-            self.textInserter.insertText(text)
-            self.finishDictation()
+            self.isCommitInFlight = false
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                self.latestTranscript = trimmed
+            }
+            self.appState.liveTranscript = self.latestTranscript
+
+            if self.appState.dictationStatus == .processing {
+                if self.isFinalCommitRequested,
+                   self.sessionBufferedAudioBytes > 0,
+                   self.requestCommit(force: true) {
+                    return
+                }
+                let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.appState.finalTranscript = finalText
+                if !finalText.isEmpty {
+                    self.appState.dictationStatus = .inserting
+                    self.textInserter.insertText(finalText)
+                }
+                self.finishDictation()
+            }
         }
 
         webSocketClient.onError = { [weak self] error in
@@ -146,9 +182,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         webSocketClient.onDisconnect = { [weak self] in
             guard let self else { return }
-            if self.appState.dictationStatus != .idle {
-                self.finishDictation()
-            }
+            guard !self.isFinishingDictation else { return }
+            guard self.appState.dictationStatus != .idle else { return }
+            self.finishDictation()
         }
     }
 
@@ -156,7 +192,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupAudioCallback() {
         audioManager.onAudioChunk = { [weak self] data in
-            self?.webSocketClient.sendAudioChunk(data)
+            self?.handleAudioChunk(data)
+        }
+    }
+
+    private func handleAudioChunk(_ data: Data) {
+        guard appState.dictationStatus == .listening || appState.dictationStatus == .processing else { return }
+        if webSocketClient.sendAudioChunk(data) {
+            sessionBufferedAudioBytes += data.count
         }
     }
 
@@ -190,6 +233,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.liveTranscript = ""
         appState.finalTranscript = ""
         appState.dictationStatus = .listening
+        stopCommitTask?.cancel()
+        stopCommitTask = nil
+        liveCommitTask?.cancel()
+        liveCommitTask = nil
+        isCommitInFlight = false
+        isFinalCommitRequested = false
+        sessionBufferedAudioBytes = 0
+        latestTranscript = ""
+        dictationStartedAt = 0
+        isAudioCaptureActive = false
+        isFinishingDictation = false
 
         if hudPanel == nil {
             hudPanel = DictationHUDPanel(appState: appState)
@@ -198,20 +252,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
         webSocketClient.connect(to: serverURL)
+        liveCommitTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: self.liveCommitIntervalNs)
+                guard self.appState.dictationStatus == .listening else { continue }
+                _ = self.requestCommit(force: false)
+            }
+        }
         // Audio capture is started in onSessionCreated, after the WebSocket handshake completes.
     }
 
     private func stopDictation() {
         guard appState.dictationStatus == .listening else { return }
+        guard isAudioCaptureActive else { return }
+        let heldFor = ProcessInfo.processInfo.systemUptime - dictationStartedAt
+        if heldFor < minimumKeyHoldToStopSeconds {
+            return
+        }
 
         audioManager.stopCapture()
+        isAudioCaptureActive = false
         appState.dictationStatus = .processing
-        webSocketClient.sendCommit()
+        isFinalCommitRequested = true
+        liveCommitTask?.cancel()
+        liveCommitTask = nil
+        stopCommitTask?.cancel()
+        stopCommitTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            guard self.appState.dictationStatus == .processing else { return }
+            if !self.requestCommit(force: true) {
+                self.finishDictation()
+            }
+        }
     }
 
     private func finishDictation() {
+        guard !isFinishingDictation else { return }
+        isFinishingDictation = true
+        stopCommitTask?.cancel()
+        stopCommitTask = nil
+        liveCommitTask?.cancel()
+        liveCommitTask = nil
+        isCommitInFlight = false
+        isFinalCommitRequested = false
+        sessionBufferedAudioBytes = 0
+        latestTranscript = ""
+        dictationStartedAt = 0
+        if isAudioCaptureActive {
+            audioManager.stopCapture()
+            isAudioCaptureActive = false
+        }
+        appState.dictationStatus = .idle
         webSocketClient.disconnect()
         hudPanel?.hide()
-        appState.dictationStatus = .idle
+        isFinishingDictation = false
+    }
+
+    private func requestCommit(force: Bool) -> Bool {
+        guard webSocketClient.hasActiveSession else { return false }
+        guard !isCommitInFlight else { return true }
+        if !force && sessionBufferedAudioBytes < liveCommitMinimumAudioBytes {
+            return true
+        }
+        if webSocketClient.sendCommit() {
+            isCommitInFlight = true
+            sessionBufferedAudioBytes = 0
+            return true
+        }
+        return false
     }
 }

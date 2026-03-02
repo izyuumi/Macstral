@@ -18,6 +18,7 @@ class WebSocketClient: NSObject {
     private var webSocketTask: URLSessionWebSocketTask?
     private var urlSession: URLSession?
     private var isConnected = false
+    private var isAcceptingAudio = false
 
     var hasActiveSession: Bool { isConnected }
 
@@ -47,22 +48,20 @@ class WebSocketClient: NSObject {
     /// Disconnect and clean up.
     func disconnect() {
         guard isConnected || webSocketTask != nil else { return }
-        let wasConnected = isConnected
         isConnected = false
+        isAcceptingAudio = false
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
         urlSession = nil
-        if wasConnected {
-            onDisconnect?()
-        }
     }
 
     // MARK: - Sending Messages
 
     /// Send raw PCM-16 mono 16 kHz audio data to the server.
-    func sendAudioChunk(_ data: Data) {
-        guard isConnected, let task = webSocketTask else { return }
+    @discardableResult
+    func sendAudioChunk(_ data: Data) -> Bool {
+        guard isConnected, isAcceptingAudio, let task = webSocketTask else { return false }
         task.send(.data(data)) { [weak self] error in
             if let error {
                 Task { @MainActor [weak self] in
@@ -70,11 +69,13 @@ class WebSocketClient: NSObject {
                 }
             }
         }
+        return true
     }
 
     /// Signal end of audio input so the server produces a final transcript.
-    func sendCommit() {
-        guard isConnected, let task = webSocketTask else { return }
+    @discardableResult
+    func sendCommit() -> Bool {
+        guard isConnected, let task = webSocketTask else { return false }
         task.send(.string("commit")) { [weak self] error in
             if let error {
                 Task { @MainActor [weak self] in
@@ -82,6 +83,7 @@ class WebSocketClient: NSObject {
                 }
             }
         }
+        return true
     }
 
     // MARK: - Receive Loop
@@ -101,6 +103,7 @@ class WebSocketClient: NSObject {
                 case .failure(let error):
                     let wasConnected = self.isConnected
                     self.isConnected = false
+                    self.isAcceptingAudio = false
                     self.webSocketTask = nil
                     self.urlSession?.invalidateAndCancel()
                     self.urlSession = nil
@@ -157,6 +160,7 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
             // Identity check: ignore callbacks from a stale or replaced task.
             guard self.webSocketTask === webSocketTask else { return }
             self.isConnected = true
+            self.isAcceptingAudio = true
             self.onSessionCreated?()
             self.receiveMessages()
         }
@@ -173,6 +177,7 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
             guard self.webSocketTask === webSocketTask else { return }
             let wasConnected = self.isConnected
             self.isConnected = false
+            self.isAcceptingAudio = false
             self.webSocketTask = nil
             self.urlSession?.invalidateAndCancel()
             self.urlSession = nil

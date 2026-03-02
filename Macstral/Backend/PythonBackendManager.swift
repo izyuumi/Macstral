@@ -40,17 +40,32 @@ final class PythonBackendManager: NSObject {
         #endif
     }()
 
-    private static let modelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
-    private static let modelFiles = [
-        "config.json",
-        "model.safetensors",
-        "model.safetensors.index.json",
-        "tekken.json",
+    private static let quantizedModelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
+    private static let baseModelRevision = "b45b4dc60caf4ad824163aaa0a72adc0ad7beeaf"
+    private static let voxtralMiniRevision = "3060fe34b35ba5d44202ce9ff3c097642914f8f3"
+    private static let modelAssets: [(filename: String, url: URL)] = [
+        ("config.json", quantizedModelFileURL(filename: "config.json")),
+        ("model.safetensors", quantizedModelFileURL(filename: "model.safetensors")),
+        ("model.safetensors.index.json", quantizedModelFileURL(filename: "model.safetensors.index.json")),
+        ("tekken.json", quantizedModelFileURL(filename: "tekken.json")),
+        ("preprocessor_config.json", voxtralMiniFileURL(filename: "preprocessor_config.json")),
     ]
 
-    private static func modelFileURL(filename: String) -> URL {
+    private static func quantizedModelFileURL(filename: String) -> URL {
         URL(
-            string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/\(filename)"
+            string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(quantizedModelRevision)/\(filename)"
+        )!
+    }
+
+    private static func baseModelFileURL(filename: String) -> URL {
+        URL(
+            string: "https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/resolve/\(baseModelRevision)/\(filename)"
+        )!
+    }
+
+    private static func voxtralMiniFileURL(filename: String) -> URL {
+        URL(
+            string: "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/\(voxtralMiniRevision)/\(filename)"
         )!
     }
 
@@ -218,10 +233,28 @@ final class PythonBackendManager: NSObject {
     private func installDeps() async throws {
         try Task.checkCancellation()
         let fm = FileManager.default
+        let pythonBinaryPath = Self.pythonBinary.path
+        let envDirPath = Self.envDir.path
 
-        // Check if deps are already installed by looking for mlx_audio marker
-        let mlxAudioMarker = Self.envDir.appendingPathComponent("mlx_audio")
-        if fm.fileExists(atPath: mlxAudioMarker.path) {
+        let dependencyMarkers = [
+            Self.envDir.appendingPathComponent("mlx_audio"),
+            Self.envDir.appendingPathComponent("websockets"),
+            Self.envDir.appendingPathComponent("transformers"),
+        ]
+        let dependenciesReady = dependencyMarkers.allSatisfy { marker in
+            fm.fileExists(atPath: marker.path)
+        }
+        let hasVoxtralTransformersSupport: Bool
+        if dependenciesReady {
+            hasVoxtralTransformersSupport = try await supportsVoxtralRealtimeTransformers(
+                pythonBinaryPath: pythonBinaryPath,
+                envDirPath: envDirPath
+            )
+        } else {
+            hasVoxtralTransformersSupport = false
+        }
+
+        if dependenciesReady && hasVoxtralTransformersSupport {
             log("[PythonBackendManager] Dependencies already installed.")
             reportStep(.installingDeps, progress: 1.0, status: "Dependencies ready")
             return
@@ -231,19 +264,24 @@ final class PythonBackendManager: NSObject {
 
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
-        let pythonBinaryPath = Self.pythonBinary.path
-        let envDirPath = Self.envDir.path
+        var packages = [
+            "mlx-audio[stt]==0.3.1",
+            "websockets==15.0.1",
+        ]
+        if !hasVoxtralTransformersSupport {
+            packages.append("transformers==5.0.0rc3")
+        }
 
-        // Run pip off the main actor to avoid blocking the UI thread.
-        // Dependency versions are pinned for reproducible builds.
         let (pipStatus, pipOutput): (Int32, Data) = try await Task.detached {
             let pip = Process()
             pip.executableURL = URL(fileURLWithPath: pythonBinaryPath)
-            pip.arguments = [
+            var args = [
                 "-m", "pip", "install",
+                "--upgrade",
                 "--target", envDirPath,
-                "mlx-audio[stt]==0.2.9", "websockets==15.0.1",
             ]
+            args.append(contentsOf: packages)
+            pip.arguments = args
             let pipOut = Pipe()
             pip.standardOutput = pipOut
             pip.standardError = pipOut
@@ -268,8 +306,8 @@ final class PythonBackendManager: NSObject {
         try Task.checkCancellation()
         let fm = FileManager.default
 
-        let allFilesExist = Self.modelFiles.allSatisfy { filename in
-            let filePath = Self.modelDir.appendingPathComponent(filename).path
+        let allFilesExist = Self.modelAssets.allSatisfy { asset in
+            let filePath = Self.modelDir.appendingPathComponent(asset.filename).path
             guard fm.fileExists(atPath: filePath),
                   let attrs = try? fm.attributesOfItem(atPath: filePath),
                   let size = attrs[.size] as? Int64
@@ -284,10 +322,11 @@ final class PythonBackendManager: NSObject {
 
         try fm.createDirectory(at: Self.modelDir, withIntermediateDirectories: true)
 
-        let totalFiles = Self.modelFiles.count
-        for (index, filename) in Self.modelFiles.enumerated() {
+        let totalFiles = Self.modelAssets.count
+        for (index, asset) in Self.modelAssets.enumerated() {
             try Task.checkCancellation()
-            let url = Self.modelFileURL(filename: filename)
+            let url = asset.url
+            let filename = asset.filename
             let dest = Self.modelDir.appendingPathComponent(filename)
 
             if fm.fileExists(atPath: dest.path) {
@@ -432,6 +471,31 @@ final class PythonBackendManager: NSObject {
             throw CancellationError()
         }
         try Task.checkCancellation()
+    }
+
+    private func supportsVoxtralRealtimeTransformers(
+        pythonBinaryPath: String,
+        envDirPath: String
+    ) async throws -> Bool {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: pythonBinaryPath)
+            process.arguments = [
+                "-c",
+                "import sys; sys.path.insert(0, '\(envDirPath)'); from transformers.models.auto.configuration_auto import CONFIG_MAPPING; print('voxtral_realtime' in CONFIG_MAPPING.keys())",
+            ]
+            let outputPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = Pipe()
+            try process.run()
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return false }
+            let output = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return output == "true"
+        }.value
     }
 
     private func cancelActiveDownload() {
