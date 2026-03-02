@@ -106,8 +106,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupWebSocketCallbacks() {
         webSocketClient.onSessionCreated = { [weak self] in
+            guard let self else { return }
             print("[WebSocket] Session created")
-            self?.appState.dictationStatus = .listening
+            self.appState.dictationStatus = .listening
+            // Start audio capture only after the WebSocket handshake has succeeded.
+            do {
+                try self.audioManager.startCapture()
+            } catch {
+                print("[Dictation] Failed to start audio capture: \(error)")
+                self.webSocketClient.disconnect()
+                self.appState.dictationStatus = .idle
+                self.hudPanel?.hide()
+            }
         }
 
         webSocketClient.onTranscriptDelta = { [weak self] transcript in
@@ -157,6 +167,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[Dictation] Backend not ready, ignoring hotkey.")
             return
         }
+        // Use dictationStatus as the re-entrancy guard. Set it eagerly before connect()
+        // so a second hotkey press while the WebSocket handshake is in-flight is ignored.
         guard appState.dictationStatus == .idle else { return }
         guard let port = backendManager.serverPort else {
             print("[Dictation] No server port available.")
@@ -165,11 +177,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         appState.liveTranscript = ""
         appState.finalTranscript = ""
-
-        let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-        webSocketClient.connect(to: serverURL)
-        guard webSocketClient.hasActiveSession else { return }
-
         appState.dictationStatus = .listening
 
         if hudPanel == nil {
@@ -177,14 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         hudPanel?.show()
 
-        do {
-            try audioManager.startCapture()
-        } catch {
-            print("[Dictation] Failed to start audio capture: \(error)")
-            webSocketClient.disconnect()
-            appState.dictationStatus = .idle
-            hudPanel?.hide()
-        }
+        let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+        webSocketClient.connect(to: serverURL)
+        // Audio capture is started in onSessionCreated, after the WebSocket handshake completes.
     }
 
     private func stopDictation() {

@@ -20,9 +20,17 @@ final class PythonBackendManager: NSObject {
     private static let pythonBinary = pythonDir
         .appendingPathComponent("python/bin/python3.11")
 
-    private static let pythonTarURL = URL(
-        string: "https://github.com/indygreg/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-aarch64-apple-darwin-install_only.tar.gz"
-    )!
+    // TODO: Verify the SHA-256 of the downloaded Python tarball before extracting.
+    private static let pythonTarURL: URL = {
+        #if arch(arm64)
+        let arch = "aarch64"
+        #else
+        let arch = "x86_64"
+        #endif
+        return URL(
+            string: "https://github.com/indygreg/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-\(arch)-apple-darwin-install_only.tar.gz"
+        )!
+    }()
 
     private static let modelFiles: [(String, String)] = [
         ("config.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/main/config.json"),
@@ -57,6 +65,7 @@ final class PythonBackendManager: NSObject {
     private var activeDownloadReceivedBytes: Int64 = 0
     private var activeDownloadStepWeight: Double = 0
     private var activeDownloadBaseProgress: Double = 0
+    private var activeDownloadStep: SetupStep = .downloadingPython
 
     // MARK: - Prepare and Start
 
@@ -102,21 +111,26 @@ final class PythonBackendManager: NSObject {
 
         let tarPath = try await downloadFile(
             from: Self.pythonTarURL,
+            step: .downloadingPython,
             stepWeight: 0.25,
             baseProgress: 0.0
         )
 
         reportStep(.downloadingPython, progress: 0.25, status: "Extracting Python runtime...")
 
-        // Extract tar.gz using /usr/bin/tar
-        let extract = Process()
-        extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-        extract.arguments = ["xzf", tarPath.path, "-C", Self.pythonDir.path]
-        try extract.run()
-        extract.waitUntilExit()
+        // Extract tar.gz off the main actor to avoid blocking the UI thread.
+        let pythonDirPath = Self.pythonDir.path
+        let extractStatus: Int32 = try await Task.detached {
+            let extract = Process()
+            extract.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            extract.arguments = ["xzf", tarPath.path, "-C", pythonDirPath]
+            try extract.run()
+            extract.waitUntilExit()
+            return extract.terminationStatus
+        }.value
 
-        guard extract.terminationStatus == 0 else {
-            throw SetupError.extractionFailed("tar exited with status \(extract.terminationStatus)")
+        guard extractStatus == 0 else {
+            throw SetupError.extractionFailed("tar exited with status \(extractStatus)")
         }
 
         // Clean up tar file
@@ -143,25 +157,31 @@ final class PythonBackendManager: NSObject {
 
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
-        let pip = Process()
-        pip.executableURL = Self.pythonBinary
-        pip.arguments = [
-            "-m", "pip", "install",
-            "--target", Self.envDir.path,
-            "mlx-audio[stt]", "websockets",
-        ]
-        let pipOut = Pipe()
-        pip.standardOutput = pipOut
-        pip.standardError = pipOut
-        try pip.run()
+        let pythonBinaryPath = Self.pythonBinary.path
+        let envDirPath = Self.envDir.path
 
-        // Read output in background
-        let outputData = pipOut.fileHandleForReading.readDataToEndOfFile()
-        pip.waitUntilExit()
+        // TODO: Pin mlx-audio and websockets to specific versions for reproducible builds.
+        // Run pip off the main actor to avoid blocking the UI thread.
+        let (pipStatus, pipOutput): (Int32, Data) = try await Task.detached {
+            let pip = Process()
+            pip.executableURL = URL(fileURLWithPath: pythonBinaryPath)
+            pip.arguments = [
+                "-m", "pip", "install",
+                "--target", envDirPath,
+                "mlx-audio[stt]", "websockets",
+            ]
+            let pipOut = Pipe()
+            pip.standardOutput = pipOut
+            pip.standardError = pipOut
+            try pip.run()
+            let outputData = pipOut.fileHandleForReading.readDataToEndOfFile()
+            pip.waitUntilExit()
+            return (pip.terminationStatus, outputData)
+        }.value
 
-        if pip.terminationStatus != 0 {
-            let output = String(data: outputData, encoding: .utf8) ?? ""
-            throw SetupError.pipInstallFailed("pip exited with status \(pip.terminationStatus): \(output)")
+        if pipStatus != 0 {
+            let output = String(data: pipOutput, encoding: .utf8) ?? ""
+            throw SetupError.pipInstallFailed("pip exited with status \(pipStatus): \(output)")
         }
 
         log("[PythonBackendManager] Dependencies installed.")
@@ -173,9 +193,11 @@ final class PythonBackendManager: NSObject {
     private func downloadModel() async throws {
         let fm = FileManager.default
 
-        // Check if model is already downloaded by looking for model.safetensors
-        let modelFile = Self.modelDir.appendingPathComponent("model.safetensors")
-        if fm.fileExists(atPath: modelFile.path) {
+        // Check if all required model files are already present.
+        let allFilesExist = Self.modelFiles.allSatisfy { (filename, _) in
+            fm.fileExists(atPath: Self.modelDir.appendingPathComponent(filename).path)
+        }
+        if allFilesExist {
             log("[PythonBackendManager] Model already downloaded.")
             reportStep(.downloadingModel, progress: 1.0, status: "Model ready")
             return
@@ -202,6 +224,7 @@ final class PythonBackendManager: NSObject {
 
             let tmpPath = try await downloadFile(
                 from: url,
+                step: .downloadingModel,
                 stepWeight: stepWeight,
                 baseProgress: baseProgress
             )
@@ -294,7 +317,8 @@ final class PythonBackendManager: NSObject {
     // MARK: - Download Helper
 
     /// Downloads a file with progress tracking. Returns the local file URL.
-    private func downloadFile(from url: URL, stepWeight: Double, baseProgress: Double) async throws -> URL {
+    private func downloadFile(from url: URL, step: SetupStep, stepWeight: Double, baseProgress: Double) async throws -> URL {
+        activeDownloadStep = step
         activeDownloadStepWeight = stepWeight
         activeDownloadBaseProgress = baseProgress
         activeDownloadReceivedBytes = 0
@@ -327,18 +351,29 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // Check HTTP response status before accepting the downloaded file.
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+           !(200...299).contains(httpResponse.statusCode) {
+            let error = SetupError.downloadFailed("HTTP \(httpResponse.statusCode) from \(downloadTask.originalRequest?.url?.absoluteString ?? "unknown URL")")
+            Task { @MainActor in
+                self.activeDownloadContinuation?.resume(throwing: error)
+                self.activeDownloadContinuation = nil
+            }
+            return
+        }
+
         // Move to a temp file we control (the system deletes `location` after this returns)
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         do {
             try FileManager.default.moveItem(at: location, to: tmp)
             Task { @MainActor in
-                activeDownloadContinuation?.resume(returning: tmp)
-                activeDownloadContinuation = nil
+                self.activeDownloadContinuation?.resume(returning: tmp)
+                self.activeDownloadContinuation = nil
             }
         } catch {
             Task { @MainActor in
-                activeDownloadContinuation?.resume(throwing: error)
-                activeDownloadContinuation = nil
+                self.activeDownloadContinuation?.resume(throwing: error)
+                self.activeDownloadContinuation = nil
             }
         }
     }
@@ -358,18 +393,10 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
                 let fraction = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
                 let overallProgress = activeDownloadBaseProgress + fraction * activeDownloadStepWeight
 
-                // Determine current step from context
-                let currentStep: SetupStep
-                if activeDownloadBaseProgress < 0.01 && activeDownloadStepWeight > 0.2 {
-                    currentStep = .downloadingPython
-                } else {
-                    currentStep = .downloadingModel
-                }
-
                 let mb = Double(totalBytesWritten) / 1_048_576.0
                 let totalMB = Double(totalBytesExpectedToWrite) / 1_048_576.0
                 let statusText = String(format: "Downloading... %.0f / %.0f MB", mb, totalMB)
-                reportStep(currentStep, progress: overallProgress, status: statusText)
+                reportStep(activeDownloadStep, progress: overallProgress, status: statusText)
             }
         }
     }
@@ -381,8 +408,8 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
     ) {
         if let error {
             Task { @MainActor in
-                activeDownloadContinuation?.resume(throwing: error)
-                activeDownloadContinuation = nil
+                self.activeDownloadContinuation?.resume(throwing: error)
+                self.activeDownloadContinuation = nil
             }
         }
     }

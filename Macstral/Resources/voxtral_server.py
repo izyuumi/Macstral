@@ -16,7 +16,6 @@ Protocol:
 import asyncio
 import json
 import os
-import struct
 import sys
 import tempfile
 import wave
@@ -60,17 +59,18 @@ def load_voxtral():
 
 def pcm_bytes_to_wav(pcm_data: bytes) -> str:
     """Write raw PCM-16 mono 16 kHz bytes to a temporary WAV file and return its path."""
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
     try:
-        with wave.open(tmp.name, "wb") as wf:
+        with wave.open(tmp_path, "wb") as wf:
             wf.setnchannels(1)
             wf.setsampwidth(SAMPLE_WIDTH)
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(pcm_data)
     except Exception:
-        os.unlink(tmp.name)
+        os.unlink(tmp_path)
         raise
-    return tmp.name
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------

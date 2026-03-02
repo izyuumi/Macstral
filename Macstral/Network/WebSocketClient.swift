@@ -24,6 +24,8 @@ class WebSocketClient: NSObject {
     // MARK: - Connection Management
 
     /// Connects to the Voxtral WebSocket server at the given URL.
+    /// `isConnected` and `onSessionCreated` are deferred until the WebSocket handshake succeeds
+    /// via `urlSession(_:webSocketTask:didOpenWithProtocol:)`.
     func connect(to url: URL? = nil) {
         guard !isConnected else { return }
         guard let url else {
@@ -37,10 +39,7 @@ class WebSocketClient: NSObject {
         let task = session.webSocketTask(with: url)
         self.webSocketTask = task
         task.resume()
-
-        isConnected = true
-        onSessionCreated?()
-        receiveMessages()
+        // Do NOT set isConnected here; wait for didOpenWithProtocol to confirm the handshake.
     }
 
     /// Disconnect and clean up.
@@ -142,6 +141,21 @@ class WebSocketClient: NSObject {
 // MARK: - URLSessionWebSocketDelegate
 
 extension WebSocketClient: URLSessionWebSocketDelegate {
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        // The WebSocket handshake has completed — now it is safe to mark the session connected.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.isConnected = true
+            self.onSessionCreated?()
+            self.receiveMessages()
+        }
+    }
+
     nonisolated func urlSession(
         _ session: URLSession,
         webSocketTask: URLSessionWebSocketTask,
