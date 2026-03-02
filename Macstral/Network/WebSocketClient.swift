@@ -187,6 +187,30 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
         }
     }
 
+    /// Handles transport-level failures that occur before the WebSocket handshake completes
+    /// (e.g., DNS resolution failure, ECONNREFUSED, TLS error).  `didOpenWithProtocol` is
+    /// never called in these cases, so without this delegate method the caller would never
+    /// learn that the connection attempt failed.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard let error else { return } // nil means the task finished cleanly
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Only act if the handshake never completed (isConnected still false) and the
+            // failing task is the one we started.
+            guard !self.isConnected,
+                  self.webSocketTask === (task as? URLSessionWebSocketTask)
+            else { return }
+            self.webSocketTask = nil
+            self.urlSession?.invalidateAndCancel()
+            self.urlSession = nil
+            self.onError?(error)
+        }
+    }
+
     nonisolated func urlSession(
         _ session: URLSession,
         webSocketTask: URLSessionWebSocketTask,
