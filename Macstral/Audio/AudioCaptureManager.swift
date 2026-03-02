@@ -22,7 +22,7 @@ final class AudioCaptureManager {
 
     private var converter: AVAudioConverter?
 
-    /// ~0.3 s worth of samples at 16 kHz.
+    /// ~0.064 s worth of samples at 16 kHz (1 024 frames ÷ 16 000 Hz).
     private let tapBufferSize: AVAudioFrameCount = 1_024
 
     // MARK: - Capture control
