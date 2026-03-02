@@ -5,15 +5,18 @@ final class OnboardingWindow: NSWindow {
 
     private var appState: AppState
     private var onPermissionStateChangedCallback: (() -> Void)?
+    private var onRetrySetupCallback: (() -> Void)?
     private var onCompleteCallback: (() -> Void)?
 
     init(
         appState: AppState,
         onPermissionStateChanged: (() -> Void)? = nil,
+        onRetrySetup: (() -> Void)? = nil,
         onComplete: (() -> Void)? = nil
     ) {
         self.appState = appState
         self.onPermissionStateChangedCallback = onPermissionStateChanged
+        self.onRetrySetupCallback = onRetrySetup
         self.onCompleteCallback = onComplete
 
         let windowSize = NSSize(width: 450, height: 470)
@@ -44,6 +47,9 @@ final class OnboardingWindow: NSWindow {
             appState: appState,
             onPermissionStateChanged: { [weak self] in
                 self?.onPermissionStateChangedCallback?()
+            },
+            onRetrySetup: { [weak self] in
+                self?.onRetrySetupCallback?()
             },
             onComplete: { [weak self] in
                 self?.onCompleteCallback?()

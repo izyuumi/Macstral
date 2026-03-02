@@ -5,6 +5,7 @@ struct OnboardingView: View {
 
     var appState: AppState
     var onPermissionStateChanged: (() -> Void)?
+    var onRetrySetup: (() -> Void)?
     var onComplete: (() -> Void)?
 
     var body: some View {
@@ -67,10 +68,18 @@ struct OnboardingView: View {
             .disabled(!(appState.hasMicPermission && appState.hasAccessibilityPermission && appState.isVoxtralReady))
 
             if case .error(let message) = appState.setupStep {
-                Text(message)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
+                VStack(spacing: 10) {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+
+                    Button("Retry Model Setup") {
+                        onRetrySetup?()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
             }
         }
         .padding(28)

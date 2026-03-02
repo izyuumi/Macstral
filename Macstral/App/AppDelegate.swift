@@ -73,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onPermissionStateChanged: { [weak self] in
                 self?.checkPermissions()
             },
+            onRetrySetup: { [weak self] in
+                self?.startVoxtralSetup()
+            },
             onComplete: { [weak self] in
                 guard let self else { return }
                 self.appState.isOnboardingNeeded = false
