@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import wave
 
 # ---------------------------------------------------------------------------
@@ -55,6 +56,25 @@ MAX_AUDIO_BUFFER_BYTES = 50 * 1024 * 1024  # 50 MB
 def load_voxtral():
     global model
     model = load_model(model_dir)
+
+
+def transcribe_in_thread(wav_path: str, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue):
+    full_text = ""
+    try:
+        for chunk in model.generate(
+            wav_path,
+            stream=True,
+            transcription_delay_ms=480,
+        ):
+            text = chunk if isinstance(chunk, str) else str(chunk)
+            full_text += text
+            loop.call_soon_threadsafe(queue.put_nowait, ("delta", full_text))
+        loop.call_soon_threadsafe(queue.put_nowait, ("done", full_text))
+    except Exception as exc:
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            ("error", f"Transcription error: {exc}"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -113,28 +133,22 @@ async def handle_client(websocket):
                 audio_buffer.clear()
 
                 try:
-                    # Stream transcription
-                    full_text = ""
-                    for chunk in model.generate(
-                        wav_path,
-                        stream=True,
-                        transcription_delay_ms=480,
-                    ):
-                        text = chunk if isinstance(chunk, str) else str(chunk)
-                        full_text += text
+                    loop = asyncio.get_running_loop()
+                    queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+                    thread = threading.Thread(
+                        target=transcribe_in_thread,
+                        args=(wav_path, loop, queue),
+                        daemon=True,
+                    )
+                    thread.start()
+
+                    while True:
+                        message_type, text = await queue.get()
                         await websocket.send(
-                            json.dumps({"type": "delta", "text": full_text})
+                            json.dumps({"type": message_type, "text": text})
                         )
-                    # Send final result
-                    await websocket.send(
-                        json.dumps({"type": "done", "text": full_text})
-                    )
-                except Exception as exc:
-                    await websocket.send(
-                        json.dumps(
-                            {"type": "error", "text": f"Transcription error: {exc}"}
-                        )
-                    )
+                        if message_type in {"done", "error"}:
+                            break
                 finally:
                     try:
                         os.unlink(wav_path)
@@ -147,15 +161,16 @@ async def handle_client(websocket):
 # ---------------------------------------------------------------------------
 
 async def main():
-    # Load model before accepting connections
     print("loading_model", flush=True)
-    load_voxtral()
+    try:
+        load_voxtral()
+    except Exception as exc:
+        print(f"startup_error:{exc}", file=sys.stderr, flush=True)
+        raise
 
-    # Bind to a random available port on localhost
     server = await websockets.serve(handle_client, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
 
-    # Print port number so the Swift host can read it from stdout
     print(port, flush=True)
 
     await server.wait_closed()

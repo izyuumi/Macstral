@@ -58,6 +58,9 @@ final class PythonBackendManager: NSObject {
     private(set) var serverPort: Int?
     private var serverProcess: Process?
     private var isActive = false
+    private var expectedTerminatingProcessID: ObjectIdentifier?
+    private var currentSetupToken = UUID()
+    private var recentServerErrorOutput = ""
 
     var isRunning: Bool { isActive }
 
@@ -69,6 +72,7 @@ final class PythonBackendManager: NSObject {
     }()
 
     private var activeDownloadContinuation: CheckedContinuation<URL, Error>?
+    private var activeDownloadTask: URLSessionDownloadTask?
     private var activeDownloadExpectedBytes: Int64 = 0
     private var activeDownloadReceivedBytes: Int64 = 0
     private var activeDownloadStepWeight: Double = 0
@@ -79,12 +83,27 @@ final class PythonBackendManager: NSObject {
 
     /// Runs all setup steps then launches the inference server.
     func prepareAndStart() async {
+        let setupToken = UUID()
+        currentSetupToken = setupToken
+
         do {
+            try checkSetupValidity(setupToken)
             try await setupPython()
+            try checkSetupValidity(setupToken)
             try await installDeps()
+            try checkSetupValidity(setupToken)
             try await downloadModel()
+            try checkSetupValidity(setupToken)
             try await launchServer()
+            try checkSetupValidity(setupToken)
+        } catch is CancellationError {
+            guard currentSetupToken == setupToken else { return }
+            resetActiveDownload()
+            if !isActive {
+                onStatusChange?(.stopped)
+            }
         } catch {
+            guard currentSetupToken == setupToken else { return }
             let message = error.localizedDescription
             log("[PythonBackendManager] Setup failed: \(message)")
             reportStep(.error(message), progress: 0, status: "Setup failed: \(message)")
@@ -95,7 +114,12 @@ final class PythonBackendManager: NSObject {
     // MARK: - Stop
 
     func stop() {
-        serverProcess?.terminate()
+        currentSetupToken = UUID()
+        cancelActiveDownload()
+        if let process = serverProcess {
+            expectedTerminatingProcessID = ObjectIdentifier(process)
+            process.terminate()
+        }
         serverProcess = nil
         serverPort = nil
         isActive = false
@@ -288,66 +312,62 @@ final class PythonBackendManager: NSObject {
         let process = Process()
         process.executableURL = Self.pythonBinary
         process.arguments = [scriptURL.path]
-        process.environment = [
-            "MACSTRAL_ENV_DIR": Self.envDir.path,
-            "MACSTRAL_MODEL_DIR": Self.modelDir.path,
-            "PATH": Self.pythonBinary.deletingLastPathComponent().path,
-        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["MACSTRAL_ENV_DIR"] = Self.envDir.path
+        environment["MACSTRAL_MODEL_DIR"] = Self.modelDir.path
+        let pythonBinPath = Self.pythonBinary.deletingLastPathComponent().path
+        let existingPath = environment["PATH"] ?? ""
+        environment["PATH"] = existingPath.isEmpty ? pythonBinPath : "\(pythonBinPath):\(existingPath)"
+        process.environment = environment
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let processID = ObjectIdentifier(process)
+        let manager = self
+        process.terminationHandler = { terminatedProcess in
+            Task { @MainActor in
+                manager.handleServerTermination(terminatedProcess, processID: processID)
+            }
+        }
 
         try process.run()
         serverProcess = process
+        recentServerErrorOutput = ""
 
-        // Read stderr in background for logging
-        Task.detached { [weak self] in
-            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+        Task.detached {
+            let handle = stderrPipe.fileHandleForReading
+            while true {
+                let data = handle.availableData
+                if data.isEmpty {
+                    return
+                }
+                guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { continue }
                 await MainActor.run {
-                    self?.log("[voxtral_server stderr] \(text)")
+                    manager.appendRecentServerError(text)
+                    manager.log("[voxtral_server stderr] \(text)")
                 }
             }
         }
 
-        // Read port number from stdout
-        let port = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
-            Task.detached {
-                let handle = stdoutPipe.fileHandleForReading
-                var accumulated = Data()
-                var loadingModelSeen = false
-
-                while true {
-                    let chunk = handle.availableData
-                    if chunk.isEmpty {
-                        continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port"))
-                        return
-                    }
-                    accumulated.append(chunk)
-
-                    guard let text = String(data: accumulated, encoding: .utf8) else { continue }
-                    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-
-                    for line in lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if trimmed == "loading_model" && !loadingModelSeen {
-                            loadingModelSeen = true
-                            await MainActor.run { [weak self] in
-                                self?.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
-                            }
-                        } else if let portNum = Int(trimmed), portNum > 0 {
-                            continuation.resume(returning: portNum)
-                            return
-                        }
-                    }
-                }
+        let port = try await withThrowingTaskGroup(of: Int.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { throw SetupError.serverStartFailed("Server start failed unexpectedly.") }
+                return try await self.waitForServerPort(stdoutPipe: stdoutPipe)
             }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 120_000_000_000)
+                throw SetupError.serverStartFailed("Timed out waiting for Voxtral server to become ready.")
+            }
+            let resolvedPort = try await group.next() ?? 0
+            group.cancelAll()
+            return resolvedPort
         }
 
         serverPort = port
         isActive = true
+        expectedTerminatingProcessID = nil
         log("[PythonBackendManager] Server running on port \(port)")
         reportStep(.ready, progress: 1.0, status: "Voxtral ready")
         onStatusChange?(.ready)
@@ -363,11 +383,20 @@ final class PythonBackendManager: NSObject {
         activeDownloadReceivedBytes = 0
         activeDownloadExpectedBytes = 0
 
-        return try await withCheckedThrowingContinuation { continuation in
-            activeDownloadContinuation = continuation
-            let task = downloadSession.downloadTask(with: url)
-            task.resume()
+        let manager = self
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = downloadSession.downloadTask(with: url)
+                activeDownloadContinuation = continuation
+                activeDownloadTask = task
+                task.resume()
+            }
+        }, onCancel: {
+            Task { @MainActor in
+                manager.cancelActiveDownload()
+            }
         }
+        )
     }
 
     // MARK: - Reporting
@@ -378,6 +407,108 @@ final class PythonBackendManager: NSObject {
 
     private func log(_ message: String) {
         onLog?(message)
+    }
+
+    private func checkSetupValidity(_ token: UUID) throws {
+        if token != currentSetupToken {
+            throw CancellationError()
+        }
+        try Task.checkCancellation()
+    }
+
+    private func cancelActiveDownload() {
+        activeDownloadTask?.cancel()
+        if let continuation = activeDownloadContinuation {
+            activeDownloadContinuation = nil
+            continuation.resume(throwing: CancellationError())
+        }
+        activeDownloadTask = nil
+    }
+
+    private func resetActiveDownload() {
+        activeDownloadContinuation = nil
+        activeDownloadTask = nil
+    }
+
+    private func completeActiveDownload(with result: Result<URL, Error>) {
+        guard let continuation = activeDownloadContinuation else { return }
+        activeDownloadContinuation = nil
+        activeDownloadTask = nil
+        switch result {
+        case .success(let url):
+            continuation.resume(returning: url)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func appendRecentServerError(_ text: String) {
+        recentServerErrorOutput += text
+        if recentServerErrorOutput.count > 8_000 {
+            recentServerErrorOutput = String(recentServerErrorOutput.suffix(8_000))
+        }
+    }
+
+    private func waitForServerPort(stdoutPipe: Pipe) async throws -> Int {
+        let manager = self
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Int, Error>) in
+            Task.detached {
+                let handle = stdoutPipe.fileHandleForReading
+                var accumulated = Data()
+                var loadingModelSeen = false
+
+                while true {
+                    let chunk = handle.availableData
+                    if chunk.isEmpty {
+                        await MainActor.run {
+                            let stderrText = manager.recentServerErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if stderrText.isEmpty {
+                                continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port."))
+                            } else {
+                                continuation.resume(throwing: SetupError.serverStartFailed("Server process exited before printing port. stderr: \(stderrText)"))
+                            }
+                        }
+                        return
+                    }
+                    accumulated.append(chunk)
+
+                    guard let text = String(data: accumulated, encoding: .utf8) else { continue }
+                    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+
+                    for line in lines {
+                        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if trimmed == "loading_model" && !loadingModelSeen {
+                            loadingModelSeen = true
+                            await MainActor.run {
+                                manager.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
+                            }
+                        } else if let portNum = Int(trimmed), portNum > 0 {
+                            continuation.resume(returning: portNum)
+                            return
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleServerTermination(_ process: Process, processID: ObjectIdentifier) {
+        if expectedTerminatingProcessID == processID {
+            expectedTerminatingProcessID = nil
+            return
+        }
+        guard serverProcess === process else { return }
+        serverProcess = nil
+        serverPort = nil
+        isActive = false
+        let stderrText = recentServerErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let message: String
+        if stderrText.isEmpty {
+            message = "Voxtral server exited unexpectedly."
+        } else {
+            message = "Voxtral server exited unexpectedly: \(stderrText)"
+        }
+        onStatusChange?(.error(message))
     }
 }
 
@@ -395,8 +526,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
            !(200...299).contains(httpResponse.statusCode) {
             let error = SetupError.downloadFailed("HTTP \(httpResponse.statusCode) from \(downloadTask.originalRequest?.url?.absoluteString ?? "unknown URL")")
             Task { @MainActor in
-                self.activeDownloadContinuation?.resume(throwing: error)
-                self.activeDownloadContinuation = nil
+                self.completeActiveDownload(with: .failure(error))
             }
             return
         }
@@ -406,13 +536,11 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         do {
             try FileManager.default.moveItem(at: location, to: tmp)
             Task { @MainActor in
-                self.activeDownloadContinuation?.resume(returning: tmp)
-                self.activeDownloadContinuation = nil
+                self.completeActiveDownload(with: .success(tmp))
             }
         } catch {
             Task { @MainActor in
-                self.activeDownloadContinuation?.resume(throwing: error)
-                self.activeDownloadContinuation = nil
+                self.completeActiveDownload(with: .failure(error))
             }
         }
     }
@@ -425,6 +553,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         totalBytesExpectedToWrite: Int64
     ) {
         Task { @MainActor in
+            guard self.activeDownloadTask === downloadTask else { return }
             activeDownloadReceivedBytes = totalBytesWritten
             activeDownloadExpectedBytes = totalBytesExpectedToWrite
 
@@ -447,8 +576,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
     ) {
         if let error {
             Task { @MainActor in
-                self.activeDownloadContinuation?.resume(throwing: error)
-                self.activeDownloadContinuation = nil
+                self.completeActiveDownload(with: .failure(error))
             }
         }
     }

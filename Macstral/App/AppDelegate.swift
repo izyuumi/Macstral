@@ -143,6 +143,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.finishDictation()
             }
         }
+
+        webSocketClient.onDisconnect = { [weak self] in
+            guard let self else { return }
+            if self.appState.dictationStatus != .idle {
+                self.finishDictation()
+            }
+        }
     }
 
     // MARK: - Audio
