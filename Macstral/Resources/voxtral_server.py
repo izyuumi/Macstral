@@ -127,7 +127,7 @@ def _patched_load_converted(model_path):
     if not is_mlx_audio:
         return _original_load_converted(model_path)
 
-    log("[server] Detected mlx-audio config format, transforming...")
+    log("[server] Detected mlx-audio config format, transforming...", force=True)
     config = _transform_mlx_audio_config(config)
     model = VoxtralRealtime(config)
 
@@ -149,7 +149,7 @@ def _patched_load_converted(model_path):
         new_name = _remap_mlx_audio_weight(name)
         if new_name is not None:
             remapped[new_name] = tensor
-    log(f"[server] Remapped {len(remapped)} weights from mlx-audio format")
+    log(f"[server] Remapped {len(remapped)} weights from mlx-audio format", force=True)
 
     # Quantize only modules that have .scales/.biases in the weight file
     quant_config = config.get("quantization")
@@ -188,10 +188,12 @@ config = None
 SAMPLE_RATE = 16_000
 
 MODEL_ID = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+DEBUG_TRANSCRIPTION = os.environ.get("MACSTRAL_DEBUG_TRANSCRIPTION", "").lower() in {"1", "true", "yes"}
 
 
-def log(msg: str):
-    """Log to stderr so PythonBackendManager captures the output."""
+def log(msg: str, *, force: bool = False):
+    if not force and not DEBUG_TRANSCRIPTION:
+        return
     print(msg, file=sys.stderr, flush=True)
 
 
@@ -199,17 +201,15 @@ def load_voxtral():
     global model, sp, config
     model, sp, config = voxmlx.load_model(MODEL_ID)
 
-    # Warm-up: run 1s of silence through the streaming pipeline so MLX
-    # compiles and caches its Metal compute graphs before the first real request.
-    log("[server] Warming up model (1s silent audio, streaming pipeline)...")
+    log("[server] Warming up model (1s silent audio, streaming pipeline)...", force=True)
     try:
         warmup_session = StreamingSession(model, sp, temperature=0.0)
         silence = np.zeros(SAMPLE_RATE, dtype=np.float32)
         warmup_session.feed_audio(silence)
         warmup_session.finalize()
-        log("[server] Warm-up complete")
+        log("[server] Warm-up complete", force=True)
     except Exception as exc:
-        log(f"[server] Warm-up failed (non-fatal): {exc}")
+        log(f"[server] Warm-up failed (non-fatal): {exc}", force=True)
 
 
 # ---------------------------------------------------------------------------
@@ -217,13 +217,16 @@ def load_voxtral():
 # ---------------------------------------------------------------------------
 
 async def handle_client(websocket):
-    """Handle a single WebSocket client session."""
-    log("[server] Client connected")
+    log("[server] Client connected", force=True)
     session = StreamingSession(model, sp, temperature=0.0)
+    first_chunk_received_at = None
+    first_delta_sent = False
 
     async for message in websocket:
         if isinstance(message, bytes):
-            # Convert PCM-16 LE bytes → float32 numpy array
+            now = time.perf_counter()
+            if first_chunk_received_at is None:
+                first_chunk_received_at = now
             audio_f32 = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
             t0 = time.perf_counter()
             tokens = session.feed_audio(audio_f32)
@@ -231,33 +234,42 @@ async def handle_client(websocket):
 
             if tokens:
                 log(f"[server] feed_audio returned {len(tokens)} tokens in {t1-t0:.3f}s: \"{session.full_text[:80]}\"")
-                await websocket.send(
-                    json.dumps({"type": "delta", "text": session.full_text})
-                )
+                delta_payload = {
+                    "type": "delta",
+                    "text": "".join(tokens),
+                    "is_incremental": True,
+                    "feed_audio_ms": (t1 - t0) * 1000.0,
+                }
+                if not first_delta_sent and first_chunk_received_at is not None:
+                    delta_payload["first_chunk_to_first_delta_ms"] = (t1 - first_chunk_received_at) * 1000.0
+                    first_delta_sent = True
+                await websocket.send(json.dumps(delta_payload))
 
-            # Check if EOS was hit during feed_audio
             if session.eos_text is not None:
                 log(f"[server] EOS detected during feed: \"{session.eos_text[:80]}\"")
                 await websocket.send(
                     json.dumps({"type": "done", "text": session.eos_text})
                 )
                 session = StreamingSession(model, sp, temperature=0.0)
+                first_chunk_received_at = None
+                first_delta_sent = False
 
         elif isinstance(message, str):
             if message.strip().lower() == "commit":
-                log("[server] Received commit, finalizing session...")
+                log("[server] Received commit, finalizing session...", force=True)
                 t0 = time.perf_counter()
-                tokens = session.finalize()
+                session.finalize()
                 t1 = time.perf_counter()
                 final_text = session.full_text
-                log(f"[server] finalize() took {t1-t0:.3f}s, result: \"{final_text[:80]}\"")
+                log(f"[server] finalize() took {t1-t0:.3f}s, result: \"{final_text[:80]}\"", force=True)
                 await websocket.send(
-                    json.dumps({"type": "done", "text": final_text})
+                    json.dumps({"type": "done", "text": final_text, "finalize_ms": (t1 - t0) * 1000.0})
                 )
-                # Reset session for next utterance
                 session = StreamingSession(model, sp, temperature=0.0)
+                first_chunk_received_at = None
+                first_delta_sent = False
 
-    log("[server] Client disconnected")
+    log("[server] Client disconnected", force=True)
 
 
 # ---------------------------------------------------------------------------

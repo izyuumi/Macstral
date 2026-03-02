@@ -10,6 +10,7 @@ class WebSocketClient: NSObject {
     var onSessionCreated: (() -> Void)?
     var onTranscriptDelta: ((String) -> Void)?
     var onTranscriptDone: ((String) -> Void)?
+    var onTimingEvent: ((ServerTimingEvent) -> Void)?
     var onError: ((Error) -> Void)?
     var onDisconnect: (() -> Void)?
 
@@ -19,6 +20,7 @@ class WebSocketClient: NSObject {
     private var urlSession: URLSession?
     private var isConnected = false
     private var isAcceptingAudio = false
+    private var cumulativeDeltaText = ""
 
     var hasActiveSession: Bool { isConnected }
 
@@ -50,6 +52,7 @@ class WebSocketClient: NSObject {
         guard isConnected || webSocketTask != nil else { return }
         isConnected = false
         isAcceptingAudio = false
+        cumulativeDeltaText = ""
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
@@ -127,9 +130,26 @@ class WebSocketClient: NSObject {
 
             switch type {
             case "delta":
-                onTranscriptDelta?(transcript)
+                let isIncremental = (json["is_incremental"] as? Bool) ?? false
+                if isIncremental {
+                    cumulativeDeltaText += transcript
+                    onTranscriptDelta?(cumulativeDeltaText)
+                } else {
+                    cumulativeDeltaText = transcript
+                    onTranscriptDelta?(transcript)
+                }
+                if let firstChunkToFirstDeltaMs = json["first_chunk_to_first_delta_ms"] as? Double {
+                    onTimingEvent?(.firstChunkToFirstDelta(firstChunkToFirstDeltaMs))
+                }
+                if let feedAudioMs = json["feed_audio_ms"] as? Double {
+                    onTimingEvent?(.feedAudio(feedAudioMs))
+                }
             case "done":
+                cumulativeDeltaText = ""
                 onTranscriptDone?(transcript)
+                if let finalizeMs = json["finalize_ms"] as? Double {
+                    onTimingEvent?(.finalize(finalizeMs))
+                }
             case "error":
                 onError?(WebSocketError.serverError(transcript))
             default:
@@ -161,6 +181,7 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
             guard self.webSocketTask === webSocketTask else { return }
             self.isConnected = true
             self.isAcceptingAudio = true
+            self.cumulativeDeltaText = ""
             self.onSessionCreated?()
             self.receiveMessages()
         }
@@ -178,6 +199,7 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
             let wasConnected = self.isConnected
             self.isConnected = false
             self.isAcceptingAudio = false
+            self.cumulativeDeltaText = ""
             self.webSocketTask = nil
             self.urlSession?.invalidateAndCancel()
             self.urlSession = nil
@@ -202,4 +224,10 @@ enum WebSocketError: LocalizedError {
             return "Server error: \(msg)"
         }
     }
+}
+
+enum ServerTimingEvent {
+    case firstChunkToFirstDelta(Double)
+    case feedAudio(Double)
+    case finalize(Double)
 }
