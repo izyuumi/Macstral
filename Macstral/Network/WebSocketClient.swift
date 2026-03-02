@@ -102,6 +102,8 @@ class WebSocketClient: NSObject {
                     let wasConnected = self.isConnected
                     self.isConnected = false
                     self.webSocketTask = nil
+                    self.urlSession?.invalidateAndCancel()
+                    self.urlSession = nil
                     if wasConnected {
                         self.onError?(error)
                         self.onDisconnect?()
@@ -167,12 +169,16 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
         reason: Data?
     ) {
         Task { @MainActor [weak self] in
-            guard let self, self.isConnected else { return }
-            // Identity check: ignore callbacks from a stale or replaced task.
+            guard let self else { return }
             guard self.webSocketTask === webSocketTask else { return }
+            let wasConnected = self.isConnected
             self.isConnected = false
             self.webSocketTask = nil
-            self.onDisconnect?()
+            self.urlSession?.invalidateAndCancel()
+            self.urlSession = nil
+            if wasConnected {
+                self.onDisconnect?()
+            }
         }
     }
 }

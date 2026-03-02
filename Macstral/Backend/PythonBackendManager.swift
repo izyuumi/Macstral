@@ -40,15 +40,19 @@ final class PythonBackendManager: NSObject {
         #endif
     }()
 
-    /// Pinned to a specific commit hash to ensure reproducible, supply-chain-safe downloads.
     private static let modelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
-
-    private static let modelFiles: [(String, String)] = [
-        ("config.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/config.json"),
-        ("model.safetensors", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors"),
-        ("model.safetensors.index.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors.index.json"),
-        ("tekken.json", "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/tekken.json"),
+    private static let modelFiles = [
+        "config.json",
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "tekken.json",
     ]
+
+    private static func modelFileURL(filename: String) -> URL {
+        URL(
+            string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/\(filename)"
+        )!
+    }
 
     // MARK: - Public Callbacks
 
@@ -264,8 +268,7 @@ final class PythonBackendManager: NSObject {
         try Task.checkCancellation()
         let fm = FileManager.default
 
-        // Check if all required model files are already present and non-empty.
-        let allFilesExist = Self.modelFiles.allSatisfy { (filename, _) in
+        let allFilesExist = Self.modelFiles.allSatisfy { filename in
             let filePath = Self.modelDir.appendingPathComponent(filename).path
             guard fm.fileExists(atPath: filePath),
                   let attrs = try? fm.attributesOfItem(atPath: filePath),
@@ -282,9 +285,9 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.modelDir, withIntermediateDirectories: true)
 
         let totalFiles = Self.modelFiles.count
-        for (index, (filename, urlString)) in Self.modelFiles.enumerated() {
+        for (index, filename) in Self.modelFiles.enumerated() {
             try Task.checkCancellation()
-            let url = URL(string: urlString)!
+            let url = Self.modelFileURL(filename: filename)
             let dest = Self.modelDir.appendingPathComponent(filename)
 
             if fm.fileExists(atPath: dest.path) {

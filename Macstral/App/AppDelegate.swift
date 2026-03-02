@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.hasMicPermission = PermissionChecker.checkMicrophonePermission()
         appState.hasAccessibilityPermission = PermissionChecker.checkAccessibilityPermission()
 
-        let allGranted = appState.hasMicPermission && appState.hasAccessibilityPermission && appState.isVoxtralReady
+        let allGranted = appState.hasMicPermission && appState.hasAccessibilityPermission
         appState.isOnboardingNeeded = !allGranted
     }
 
