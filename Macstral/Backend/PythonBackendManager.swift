@@ -572,27 +572,36 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        // Check HTTP response status before accepting the downloaded file.
-        if let httpResponse = downloadTask.response as? HTTPURLResponse,
-           !(200...299).contains(httpResponse.statusCode) {
-            let error = SetupError.downloadFailed("HTTP \(httpResponse.statusCode) from \(downloadTask.originalRequest?.url?.absoluteString ?? "unknown URL")")
+        // The system deletes `location` as soon as this method returns, so we must move the
+        // file to a path we control before doing any async work.
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        do {
+            try FileManager.default.moveItem(at: location, to: tmp)
+        } catch {
             Task { @MainActor in
                 self.completeActiveDownload(with: .failure(error))
             }
             return
         }
 
-        // Move to a temp file we control (the system deletes `location` after this returns)
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        do {
-            try FileManager.default.moveItem(at: location, to: tmp)
-            Task { @MainActor in
-                self.completeActiveDownload(with: .success(tmp))
+        Task { @MainActor in
+            // Guard against stale callbacks: if this task was cancelled or superseded by a
+            // newer download, discard the temp file and do not resume the continuation.
+            guard self.activeDownloadTask === downloadTask else {
+                try? FileManager.default.removeItem(at: tmp)
+                return
             }
-        } catch {
-            Task { @MainActor in
+
+            // Check HTTP response status before accepting the downloaded file.
+            if let httpResponse = downloadTask.response as? HTTPURLResponse,
+               !(200...299).contains(httpResponse.statusCode) {
+                try? FileManager.default.removeItem(at: tmp)
+                let error = SetupError.downloadFailed("HTTP \(httpResponse.statusCode) from \(downloadTask.originalRequest?.url?.absoluteString ?? "unknown URL")")
                 self.completeActiveDownload(with: .failure(error))
+                return
             }
+
+            self.completeActiveDownload(with: .success(tmp))
         }
     }
 
