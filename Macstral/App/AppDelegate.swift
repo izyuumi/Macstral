@@ -209,7 +209,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.liveTranscript = ""
         appState.finalTranscript = ""
 
-        let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+        guard let serverURL = URL(string: "ws://127.0.0.1:\(port)") else {
+            print("[Dictation] Failed to construct server URL.")
+            return
+        }
         isStartingDictation = true
         webSocketClient.connect(to: serverURL)
     }

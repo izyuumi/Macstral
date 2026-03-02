@@ -19,16 +19,25 @@ final class PythonBackendManager: NSObject {
         let filename: String
         let url: URL
         let sha256: String
+        let sizeBytes: Int64
     }
 
-    private static let supportDir = FileManager.default.urls(
-        for: .applicationSupportDirectory, in: .userDomainMask
-    ).first!.appendingPathComponent("Macstral")
+    private static let supportDir: URL = {
+        if let appSupportDir = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            return appSupportDir.appendingPathComponent("Macstral")
+        }
+        return FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Macstral")
+    }()
 
     private static let pythonDir = supportDir.appendingPathComponent("python")
     private static let envDir = supportDir.appendingPathComponent("env")
     private static let modelDir = supportDir.appendingPathComponent("models/voxtral-4bit")
-    private static let modelVerificationMarker = modelDir.appendingPathComponent(".verified.sha256")
+    private static let modelVerificationMarker = modelDir.appendingPathComponent(".verified.signature")
 
     private static let pythonBinary = pythonDir
         .appendingPathComponent("python/bin/python3.11")
@@ -56,24 +65,33 @@ final class PythonBackendManager: NSObject {
         .init(
             filename: "config.json",
             url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/config.json")!,
-            sha256: "02060864a4f33df5e4944684fc17f3026af4011830cac4def6e9e025315b10c5"
+            sha256: "02060864a4f33df5e4944684fc17f3026af4011830cac4def6e9e025315b10c5",
+            sizeBytes: 1513
         ),
         .init(
             filename: "model.safetensors",
             url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors")!,
-            sha256: "6f59b425d8a1ceb2de795454558be63937cf75b59f9c9bc77accd85aaf32af05"
+            sha256: "6f59b425d8a1ceb2de795454558be63937cf75b59f9c9bc77accd85aaf32af05",
+            sizeBytes: 3_133_798_126
         ),
         .init(
             filename: "model.safetensors.index.json",
             url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/model.safetensors.index.json")!,
-            sha256: "80f68b80cf4b1638d864d1504061a266f59e37a8d90d7b20f2e1f30c2d034c2e"
+            sha256: "80f68b80cf4b1638d864d1504061a266f59e37a8d90d7b20f2e1f30c2d034c2e",
+            sizeBytes: 118_632
         ),
         .init(
             filename: "tekken.json",
             url: URL(string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(modelRevision)/tekken.json")!,
-            sha256: "8434af1d39eba99f0ef46cf1450bf1a63fa941a26933a1ef5dbbf4adf0d00e44"
+            sha256: "8434af1d39eba99f0ef46cf1450bf1a63fa941a26933a1ef5dbbf4adf0d00e44",
+            sizeBytes: 14_910_348
         ),
     ]
+
+    private static let modelVerificationSignature: String = {
+        let parts = modelFiles.map { "\($0.filename):\($0.sha256):\($0.sizeBytes)" }
+        return ([modelRevision] + parts).joined(separator: "|")
+    }()
 
     // MARK: - Public Callbacks
 
@@ -97,6 +115,7 @@ final class PythonBackendManager: NSObject {
     }()
 
     private var activeDownloadContinuation: CheckedContinuation<URL, Error>?
+    private var activeDownloadTask: URLSessionDownloadTask?
     private var activeDownloadExpectedBytes: Int64 = 0
     private var activeDownloadReceivedBytes: Int64 = 0
     private var activeDownloadStepWeight: Double = 0
@@ -106,11 +125,23 @@ final class PythonBackendManager: NSObject {
 
     /// Runs all setup steps then launches the inference server.
     func prepareAndStart() async {
+        if isActive {
+            onStatusChange?(.ready)
+            reportStep(.ready, progress: 1.0, status: "Voxtral ready")
+            return
+        }
+
         do {
+            try Task.checkCancellation()
             try await setupPython()
+            try Task.checkCancellation()
             try await installDeps()
+            try Task.checkCancellation()
             try await downloadModel()
+            try Task.checkCancellation()
             try await launchServer()
+        } catch is CancellationError {
+            return
         } catch {
             let message = error.localizedDescription
             log("[PythonBackendManager] Setup failed: \(message)")
@@ -122,10 +153,15 @@ final class PythonBackendManager: NSObject {
     // MARK: - Stop
 
     func stop() {
-        serverProcess?.terminate()
+        let process = serverProcess
         serverProcess = nil
         serverPort = nil
         isActive = false
+        activeDownloadTask?.cancel()
+        activeDownloadTask = nil
+        activeDownloadContinuation?.resume(throwing: CancellationError())
+        activeDownloadContinuation = nil
+        process?.terminate()
         onStatusChange?(.stopped)
     }
 
@@ -228,21 +264,21 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.modelDir, withIntermediateDirectories: true)
 
         let totalFiles = Self.modelFiles.count
-        let hasVerificationMarker = fm.fileExists(atPath: Self.modelVerificationMarker.path)
-        if !hasVerificationMarker {
+        let markerMatchesCurrentSpec = modelVerificationMarkerMatchesCurrentSpec()
+        if !markerMatchesCurrentSpec {
             reportStep(.downloadingModel, progress: 0, status: "Verifying model files...")
         }
 
         for (index, file) in Self.modelFiles.enumerated() {
             let dest = Self.modelDir.appendingPathComponent(file.filename)
 
-            if hasVerificationMarker && isNonEmptyFile(at: dest) {
+            if markerMatchesCurrentSpec && hasExpectedFileSize(at: dest, expectedSize: file.sizeBytes) {
                 let fileProgress = Double(index + 1) / Double(totalFiles)
                 reportStep(.downloadingModel, progress: fileProgress, status: "Downloading model: \(file.filename)...")
                 continue
             }
 
-            if isNonEmptyFile(at: dest) {
+            if hasExpectedFileSize(at: dest, expectedSize: file.sizeBytes) {
                 do {
                     try verifySHA256(of: dest, expected: file.sha256, label: file.filename)
                     let fileProgress = Double(index + 1) / Double(totalFiles)
@@ -292,6 +328,21 @@ final class PythonBackendManager: NSObject {
         process.executableURL = Self.pythonBinary
         process.arguments = [scriptURL.path]
         process.environment = processEnvironment(includePythonInPath: true)
+        process.terminationHandler = { [weak self] terminatedProcess in
+            Task { @MainActor in
+                guard let self, self.serverProcess === terminatedProcess else { return }
+                self.serverProcess = nil
+                self.serverPort = nil
+                let wasActive = self.isActive
+                self.isActive = false
+                if wasActive {
+                    let message = "Voxtral server exited with status \(terminatedProcess.terminationStatus)"
+                    self.log("[PythonBackendManager] \(message)")
+                    self.reportStep(.error(message), progress: 0, status: message)
+                    self.onStatusChange?(.error(message))
+                }
+            }
+        }
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -361,10 +412,21 @@ final class PythonBackendManager: NSObject {
         activeDownloadReceivedBytes = 0
         activeDownloadExpectedBytes = 0
 
-        return try await withCheckedThrowingContinuation { continuation in
-            activeDownloadContinuation = continuation
-            let task = downloadSession.downloadTask(with: url)
-            task.resume()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                activeDownloadContinuation = continuation
+                let task = downloadSession.downloadTask(with: url)
+                activeDownloadTask = task
+                task.resume()
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.activeDownloadTask?.cancel()
+                self.activeDownloadTask = nil
+                self.activeDownloadContinuation?.resume(throwing: CancellationError())
+                self.activeDownloadContinuation = nil
+            }
         }
     }
 
@@ -404,31 +466,41 @@ final class PythonBackendManager: NSObject {
     }
 
     private func isModelReady() -> Bool {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: Self.modelVerificationMarker.path) else {
+        guard modelVerificationMarkerMatchesCurrentSpec() else {
             return false
         }
         for file in Self.modelFiles {
             let path = Self.modelDir.appendingPathComponent(file.filename)
-            if !isNonEmptyFile(at: path) {
+            if !hasExpectedFileSize(at: path, expectedSize: file.sizeBytes) {
                 return false
             }
         }
         return true
     }
 
-    private func isNonEmptyFile(at url: URL) -> Bool {
+    private func hasExpectedFileSize(at url: URL, expectedSize: Int64) -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: url.path) else { return false }
         guard let attrs = try? fm.attributesOfItem(atPath: url.path),
               let size = attrs[.size] as? NSNumber else {
             return false
         }
-        return size.int64Value > 0
+        return size.int64Value == expectedSize
     }
 
     private func writeModelVerificationMarker() throws {
-        try "verified".write(to: Self.modelVerificationMarker, atomically: true, encoding: .utf8)
+        try Self.modelVerificationSignature.write(
+            to: Self.modelVerificationMarker,
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func modelVerificationMarkerMatchesCurrentSpec() -> Bool {
+        guard let marker = try? String(contentsOf: Self.modelVerificationMarker, encoding: .utf8) else {
+            return false
+        }
+        return marker == Self.modelVerificationSignature
     }
 
     private func verifySHA256(of fileURL: URL, expected: String, label: String) throws {
@@ -512,11 +584,13 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
         do {
             try FileManager.default.moveItem(at: location, to: tmp)
             Task { @MainActor in
+                activeDownloadTask = nil
                 activeDownloadContinuation?.resume(returning: tmp)
                 activeDownloadContinuation = nil
             }
         } catch {
             Task { @MainActor in
+                activeDownloadTask = nil
                 activeDownloadContinuation?.resume(throwing: error)
                 activeDownloadContinuation = nil
             }
@@ -561,6 +635,7 @@ extension PythonBackendManager: URLSessionDownloadDelegate {
     ) {
         if let error {
             Task { @MainActor in
+                activeDownloadTask = nil
                 activeDownloadContinuation?.resume(throwing: error)
                 activeDownloadContinuation = nil
             }
