@@ -20,7 +20,6 @@ final class PythonBackendManager: NSObject {
     private static let pythonBinary = pythonDir
         .appendingPathComponent("python/bin/python3.11")
 
-    // TODO: Verify the SHA-256 of the downloaded Python tarball before extracting.
     private static let pythonTarURL: URL = {
         #if arch(arm64)
         let arch = "aarch64"
@@ -30,6 +29,15 @@ final class PythonBackendManager: NSObject {
         return URL(
             string: "https://github.com/indygreg/python-build-standalone/releases/download/20241016/cpython-3.11.10+20241016-\(arch)-apple-darwin-install_only.tar.gz"
         )!
+    }()
+
+    /// Expected SHA-256 checksums for the Python tarballs (release 20241016).
+    private static let pythonTarSHA256: String = {
+        #if arch(arm64)
+        return "5a69382da99c4620690643517ca1f1f53772331b347e75f536088c42a4cf6620"
+        #else
+        return "1e23ffe5bc473e1323ab8f51464da62d77399afb423babf67f8e13c82b69c674"
+        #endif
     }()
 
     private static let modelFiles: [(String, String)] = [
@@ -97,6 +105,7 @@ final class PythonBackendManager: NSObject {
     // MARK: - Step 1: Download Python
 
     private func setupPython() async throws {
+        try Task.checkCancellation()
         let fm = FileManager.default
 
         if fm.fileExists(atPath: Self.pythonBinary.path) {
@@ -115,6 +124,32 @@ final class PythonBackendManager: NSObject {
             stepWeight: 0.25,
             baseProgress: 0.0
         )
+
+        // Verify SHA-256 checksum before extraction to guard against corrupted downloads.
+        reportStep(.downloadingPython, progress: 0.22, status: "Verifying Python runtime checksum...")
+        let expectedSHA256 = Self.pythonTarSHA256
+        let actualSHA256: String = try await Task.detached {
+            let shasum = Process()
+            shasum.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
+            shasum.arguments = ["-a", "256", tarPath.path]
+            let pipe = Pipe()
+            shasum.standardOutput = pipe
+            try shasum.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            shasum.waitUntilExit()
+            guard shasum.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8),
+                  let hash = output.split(separator: " ").first.map(String.init)
+            else { return "" }
+            return hash
+        }.value
+        guard actualSHA256 == expectedSHA256 else {
+            try? fm.removeItem(at: tarPath)
+            throw SetupError.checksumMismatch(
+                "Python tarball checksum mismatch.\nExpected: \(expectedSHA256)\nActual:   \(actualSHA256)"
+            )
+        }
+        log("[PythonBackendManager] Python tarball checksum verified.")
 
         reportStep(.downloadingPython, progress: 0.25, status: "Extracting Python runtime...")
 
@@ -143,6 +178,7 @@ final class PythonBackendManager: NSObject {
     // MARK: - Step 2: Install Dependencies
 
     private func installDeps() async throws {
+        try Task.checkCancellation()
         let fm = FileManager.default
 
         // Check if deps are already installed by looking for mlx_audio marker
@@ -160,15 +196,15 @@ final class PythonBackendManager: NSObject {
         let pythonBinaryPath = Self.pythonBinary.path
         let envDirPath = Self.envDir.path
 
-        // TODO: Pin mlx-audio and websockets to specific versions for reproducible builds.
         // Run pip off the main actor to avoid blocking the UI thread.
+        // Dependency versions are pinned for reproducible builds.
         let (pipStatus, pipOutput): (Int32, Data) = try await Task.detached {
             let pip = Process()
             pip.executableURL = URL(fileURLWithPath: pythonBinaryPath)
             pip.arguments = [
                 "-m", "pip", "install",
                 "--target", envDirPath,
-                "mlx-audio[stt]", "websockets",
+                "mlx-audio[stt]==0.2.9", "websockets==15.0.1",
             ]
             let pipOut = Pipe()
             pip.standardOutput = pipOut
@@ -191,6 +227,7 @@ final class PythonBackendManager: NSObject {
     // MARK: - Step 3: Download Model
 
     private func downloadModel() async throws {
+        try Task.checkCancellation()
         let fm = FileManager.default
 
         // Check if all required model files are already present.
@@ -207,6 +244,7 @@ final class PythonBackendManager: NSObject {
 
         let totalFiles = Self.modelFiles.count
         for (index, (filename, urlString)) in Self.modelFiles.enumerated() {
+            try Task.checkCancellation()
             let url = URL(string: urlString)!
             let dest = Self.modelDir.appendingPathComponent(filename)
 
@@ -239,6 +277,7 @@ final class PythonBackendManager: NSObject {
     // MARK: - Step 4: Launch Server
 
     private func launchServer() async throws {
+        try Task.checkCancellation()
         reportStep(.launching, progress: 0.0, status: "Starting Voxtral server...")
         onStatusChange?(.starting)
 
@@ -423,6 +462,7 @@ enum SetupError: LocalizedError {
     case missingResource(String)
     case serverStartFailed(String)
     case downloadFailed(String)
+    case checksumMismatch(String)
 
     var errorDescription: String? {
         switch self {
@@ -431,6 +471,7 @@ enum SetupError: LocalizedError {
         case .missingResource(let msg): return msg
         case .serverStartFailed(let msg): return "Server start failed: \(msg)"
         case .downloadFailed(let msg): return "Download failed: \(msg)"
+        case .checksumMismatch(let msg): return "Checksum verification failed: \(msg)"
         }
     }
 }

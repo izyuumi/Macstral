@@ -108,7 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.onSessionCreated = { [weak self] in
             guard let self else { return }
             print("[WebSocket] Session created")
-            self.appState.dictationStatus = .listening
+            // Guard against a late handshake arriving after the user cancelled dictation.
+            // If dictationStatus is no longer .listening the session is stale; tear it down.
+            guard self.appState.dictationStatus == .listening else {
+                self.webSocketClient.disconnect()
+                return
+            }
             // Start audio capture only after the WebSocket handshake has succeeded.
             do {
                 try self.audioManager.startCapture()

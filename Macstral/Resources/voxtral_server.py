@@ -47,6 +47,10 @@ model = None
 SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2  # 16-bit PCM
 
+# Maximum audio buffer size: ~26 minutes of PCM-16 mono 16 kHz (50 MB).
+# Recordings that exceed this limit are discarded to prevent runaway memory growth.
+MAX_AUDIO_BUFFER_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 def load_voxtral():
     global model
@@ -83,7 +87,18 @@ async def handle_client(websocket):
 
     async for message in websocket:
         if isinstance(message, bytes):
-            # Accumulate PCM-16 audio data
+            # Accumulate PCM-16 audio data, enforcing the buffer size limit.
+            if len(audio_buffer) + len(message) > MAX_AUDIO_BUFFER_BYTES:
+                audio_buffer.clear()
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "error",
+                            "text": "Audio buffer limit exceeded; recording discarded.",
+                        }
+                    )
+                )
+                continue
             audio_buffer.extend(message)
         elif isinstance(message, str):
             if message.strip().lower() == "commit":

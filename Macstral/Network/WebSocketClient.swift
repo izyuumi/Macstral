@@ -28,6 +28,8 @@ class WebSocketClient: NSObject {
     /// via `urlSession(_:webSocketTask:didOpenWithProtocol:)`.
     func connect(to url: URL? = nil) {
         guard !isConnected else { return }
+        // Guard against duplicate connections: if a task is already in flight, bail out.
+        guard self.webSocketTask == nil else { return }
         guard let url else {
             onError?(WebSocketError.noServerURL)
             return
@@ -150,6 +152,8 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
         // The WebSocket handshake has completed — now it is safe to mark the session connected.
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Identity check: ignore callbacks from a stale or replaced task.
+            guard self.webSocketTask === webSocketTask else { return }
             self.isConnected = true
             self.onSessionCreated?()
             self.receiveMessages()
@@ -164,6 +168,8 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
     ) {
         Task { @MainActor [weak self] in
             guard let self, self.isConnected else { return }
+            // Identity check: ignore callbacks from a stale or replaced task.
+            guard self.webSocketTask === webSocketTask else { return }
             self.isConnected = false
             self.webSocketTask = nil
             self.onDisconnect?()
