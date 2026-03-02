@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: simple
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: echo "version=${{ needs.release-please.outputs.version }}" >> $GITHUB_OUTPUT
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$CERTIFICATE_BASE64" | base64 --decode > cert.p12
+          security create-keychain -p "" build.keychain
+          security list-keychains -d user -s build.keychain login.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+
+      - name: Build archive
+        run: |
+          xcodebuild archive \
+            -project Macstral.xcodeproj \
+            -scheme Macstral \
+            -archivePath build/Macstral.xcarchive \
+            -destination "generic/platform=macOS" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="${{ secrets.APPLE_TEAM_ID }}" \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Export archive
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath build/Macstral.xcarchive \
+            -exportPath build/export \
+            -exportOptionsPlist ExportOptions.plist
+
+      - name: Notarize
+        run: |
+          xcrun notarytool submit build/export/Macstral.app \
+            --apple-id "${{ secrets.APPLE_ID }}" \
+            --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait
+          xcrun stapler staple build/export/Macstral.app
+          pushd build/export && rm -f Macstral.zip && zip -r Macstral.zip Macstral.app && popd
+
+      - name: Package
+        id: package
+        run: |
+          SHA=$(shasum -a 256 build/export/Macstral.zip | awk '{print $1}')
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: build/export/Macstral.zip
+          asset_name: Macstral.zip
+          tag: ${{ needs.release-please.outputs.tag_name }}
+          overwrite: true
+
+      - name: Update Homebrew Cask
+        env:
+          BREW_TOKEN: ${{ secrets.BREW_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          git clone https://x-access-token:${BREW_TOKEN}@github.com/izyuumi/homebrew-tap.git
+          cd homebrew-tap
+
+          cat > Casks/macstral.rb << EOF
+          cask "macstral" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "https://github.com/izyuumi/Macstral/releases/download/${TAG}/Macstral.zip"
+            name "Macstral"
+            desc "Hold-to-dictate macOS menu bar app powered by on-device speech recognition"
+            homepage "https://github.com/izyuumi/Macstral"
+
+            app "Macstral.app"
+
+            zap trash: [
+              "~/Library/Application Support/Macstral",
+              "~/Library/Preferences/to.yumi.Macstral.plist",
+              "~/Library/Caches/to.yumi.Macstral",
+            ]
+          end
+          EOF
+
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions"
+          git add Casks/macstral.rb
+          git commit -m "chore: release macstral ${TAG}"
+          git push
