@@ -242,7 +242,7 @@ final class PythonBackendManager: NSObject {
         // A stamp file records which dependency set is installed. When the pinned
         // commit changes, the stamp won't match and we'll reinstall.
         let depsStamp = Self.envDir.appendingPathComponent(".macstral_deps_stamp")
-        let expectedStamp = "voxmlx-tomsilver+websockets==15.0.1"
+        let expectedStamp = "voxmlx-48bfdec9+websockets==15.0.1"
         let currentStamp = (try? String(contentsOf: depsStamp, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         if currentStamp == expectedStamp {
             log("[PythonBackendManager] Dependencies already installed.")
@@ -255,7 +255,8 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
         let packages = [
-            "voxmlx @ git+https://github.com/T0mSIlver/voxmlx.git",
+            // Pinned to an immutable commit hash to prevent supply-chain risk from mutable branches.
+            "voxmlx @ git+https://github.com/T0mSIlver/voxmlx.git@48bfdec9bc4f4f01390b25b0e098deae6dd3ae6c",
             "websockets==15.0.1",
         ]
 
