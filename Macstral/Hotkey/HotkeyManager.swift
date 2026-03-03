@@ -14,7 +14,7 @@ struct HotkeySettings {
 
     // Special carbon key code used to persist "fn key" mode.
     // Key.function.carbonKeyCode == kVK_Function (0x3F).
-    static var isFnKey: (Key, NSEvent.ModifierFlags) -> Bool = { key, mods in
+    static let isFnKey: (Key, NSEvent.ModifierFlags) -> Bool = { key, mods in
         key == .function && mods.isEmpty
     }
 
@@ -159,12 +159,15 @@ class HotkeyManager {
             flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 guard let self else { return }
                 let isFnDown = event.modifierFlags.contains(.function)
-                if isFnDown && !self.fnWasDown {
-                    self.fnWasDown = true
-                    self.onKeyDown?()
-                } else if !isFnDown && self.fnWasDown {
-                    self.fnWasDown = false
-                    self.onKeyUp?()
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if isFnDown && !self.fnWasDown {
+                        self.fnWasDown = true
+                        self.onKeyDown?()
+                    } else if !isFnDown && self.fnWasDown {
+                        self.fnWasDown = false
+                        self.onKeyUp?()
+                    }
                 }
             }
         } else {
