@@ -67,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         setupTask?.cancel()
+        webSocketClient.disconnect()
         hotkeyManager.teardown()
         backendManager.stop()
     }
@@ -118,6 +119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.appState.backendStatus = status
             self.statusBarController?.updateStatus(status)
+            // Establish persistent WebSocket when the backend becomes ready.
+            if status == .ready, !self.webSocketClient.hasActiveConnection,
+               let port = self.backendManager.serverPort {
+                let url = URL(string: "ws://127.0.0.1:\(port)")!
+                self.webSocketClient.connect(to: url)
+            }
         }
 
         backendManager.onSetupProgress = { [weak self] step, progress, statusText in
@@ -135,6 +142,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - WebSocket
 
     private func setupWebSocketCallbacks() {
+        webSocketClient.onConnected = { [weak self] in
+            guard let self else { return }
+            print("[WebSocket] Persistent connection established")
+            // If dictation is waiting for the connection, start a session now.
+            if self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing {
+                self.webSocketClient.startSession()
+            }
+        }
+
         webSocketClient.onSessionCreated = { [weak self] in
             guard let self else { return }
             print("[WebSocket] Session created")
@@ -144,14 +160,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.recordDurationSample(
                 from: self.hotkeyDownAt,
                 to: now,
-                label: "hotkey->ws_open",
+                label: "hotkey->session_ready",
                 in: &self.wsHandshakeSamples
             )
-            // Guard against a late handshake arriving after the user cancelled dictation.
-            // Allow .processing too: key-up may have occurred before the handshake completed,
-            // and we still want to flush buffered audio rather than drop it.
             guard self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing else {
-                self.webSocketClient.disconnect()
+                self.webSocketClient.endSession()
                 return
             }
             if !self.flushPendingAudioChunks() {
@@ -262,10 +275,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.onDisconnect = { [weak self] in
             guard let self else { return }
             print("[WebSocket] onDisconnect: isFinishing=\(self.isFinishingDictation) status=\(self.appState.dictationStatus)")
-            guard !self.isFinishingDictation else { return }
-            guard self.appState.dictationStatus != .idle else { return }
-            print("[WebSocket] Unexpected disconnect during dictation — finishing")
-            self.finishDictation()
+            if !self.isFinishingDictation, self.appState.dictationStatus != .idle {
+                print("[WebSocket] Unexpected disconnect during dictation — finishing")
+                self.finishDictation()
+            }
+            // Reconnect persistent WebSocket if backend is still ready.
+            if self.appState.backendStatus == .ready,
+               let port = self.backendManager.serverPort {
+                let url = URL(string: "ws://127.0.0.1:\(port)")!
+                print("[WebSocket] Reconnecting persistent connection...")
+                self.webSocketClient.connect(to: url)
+            }
         }
     }
 
@@ -384,14 +404,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-        webSocketClient.connect(to: serverURL)
-        // No live commits while listening — transcribe all audio in one shot when
-        // the user releases the hotkey.  This avoids paying the ~1.4 s encoder +
-        // prefill overhead on every partial commit and lets the model process the
-        // full utterance at once, which is significantly faster for the 4B model.
-        // Audio capture is started in startDictation() before the WebSocket handshake;
-        // audio is buffered locally until the session is ready to process it.
+        // Use the persistent WebSocket if already connected; otherwise fall back
+        // to a fresh connect (e.g., after backend restart).
+        if webSocketClient.hasActiveConnection {
+            webSocketClient.startSession()
+        } else {
+            let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+            webSocketClient.connect(to: serverURL)
+            // onConnected callback will call startSession() once the handshake completes.
+        }
     }
 
     private func stopDictation() {
@@ -418,19 +439,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isFinalCommitRequested = true
         liveCommitTask?.cancel()
         liveCommitTask = nil
-        stopCommitTask?.cancel()
-        stopCommitTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            guard self.appState.dictationStatus == .processing else {
-                print("[Dictation] stopCommitTask: status changed to \(self.appState.dictationStatus), skipping")
-                return
-            }
-            print("[Dictation] stopCommitTask: firing after 60ms delay")
-            if !self.requestCommit(force: true) {
-                print("[Dictation] stopCommitTask: requestCommit failed, finishing dictation")
-                self.finishDictation()
-            }
+        // Send commit immediately — no delay. Audio capture is stopped
+        // synchronously above, so no late chunks can arrive.
+        print("[Dictation] stopDictation: sending commit immediately")
+        if !requestCommit(force: true) {
+            print("[Dictation] stopDictation: requestCommit failed, finishing dictation")
+            finishDictation()
         }
     }
 
@@ -459,7 +473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isAudioCaptureActive = false
         }
         appState.dictationStatus = .idle
-        webSocketClient.disconnect()
+        webSocketClient.endSession()
         hudPanel?.hide()
         isFinishingDictation = false
     }

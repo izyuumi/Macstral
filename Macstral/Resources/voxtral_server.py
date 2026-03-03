@@ -223,14 +223,54 @@ def load_voxtral():
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
+def _create_session():
+    """Create a new StreamingSession (may be called from a thread)."""
+    return StreamingSession(model, sp, temperature=0.0)
+
+
+# Batching threshold: accumulate audio until this many float32 samples
+# (~500ms at 16 kHz = 8000 samples) before feeding to the model, reducing
+# per-chunk thread-pool scheduling overhead.
+AUDIO_BATCH_THRESHOLD = 8_000
+
+
+async def _feed_buffered_audio(session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket):
+    """Feed accumulated audio buffer to the model and send deltas."""
+    if len(audio_buffer) == 0:
+        return audio_buffer, first_delta_sent
+    t0 = time.perf_counter()
+    tokens = await asyncio.to_thread(session.feed_audio, audio_buffer)
+    t1 = time.perf_counter()
+
+    if tokens:
+        log(f"[server] feed_audio returned {len(tokens)} tokens in {t1-t0:.3f}s: \"{session.full_text[:80]}\"")
+        delta_payload = {
+            "type": "delta",
+            "text": "".join(tokens),
+            "is_incremental": True,
+            "feed_audio_ms": (t1 - t0) * 1000.0,
+        }
+        if not first_delta_sent and first_chunk_received_at is not None:
+            delta_payload["first_chunk_to_first_delta_ms"] = (t1 - first_chunk_received_at) * 1000.0
+            first_delta_sent = True
+        await websocket.send(json.dumps(delta_payload))
+
+    return np.array([], dtype=np.float32), first_delta_sent
+
+
 async def handle_client(websocket):
     log("[server] Client connected", force=True)
-    session = StreamingSession(model, sp, temperature=0.0)
+    session = None
+    pre_allocated_session = None
     first_chunk_received_at = None
     first_delta_sent = False
+    audio_buffer = np.array([], dtype=np.float32)
 
     async for message in websocket:
         if isinstance(message, bytes):
+            if session is None:
+                # Audio arrived before start_session; ignore.
+                continue
             if len(message) % 2 != 0:
                 await websocket.send(json.dumps({"type": "error", "text": "Invalid PCM frame size"}))
                 continue
@@ -238,34 +278,48 @@ async def handle_client(websocket):
             if first_chunk_received_at is None:
                 first_chunk_received_at = now
             audio_f32 = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
-            t0 = time.perf_counter()
-            tokens = await asyncio.to_thread(session.feed_audio, audio_f32)
-            t1 = time.perf_counter()
+            audio_buffer = np.concatenate([audio_buffer, audio_f32])
 
-            if tokens:
-                log(f"[server] feed_audio returned {len(tokens)} tokens in {t1-t0:.3f}s: \"{session.full_text[:80]}\"")
-                delta_payload = {
-                    "type": "delta",
-                    "text": "".join(tokens),
-                    "is_incremental": True,
-                    "feed_audio_ms": (t1 - t0) * 1000.0,
-                }
-                if not first_delta_sent and first_chunk_received_at is not None:
-                    delta_payload["first_chunk_to_first_delta_ms"] = (t1 - first_chunk_received_at) * 1000.0
-                    first_delta_sent = True
-                await websocket.send(json.dumps(delta_payload))
+            # Feed in batches to reduce thread-pool scheduling overhead.
+            if len(audio_buffer) >= AUDIO_BATCH_THRESHOLD:
+                audio_buffer, first_delta_sent = await _feed_buffered_audio(
+                    session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
+                )
 
             if session.eos_text is not None:
                 log(f"[server] EOS detected during feed: \"{session.eos_text[:80]}\"")
                 await websocket.send(
                     json.dumps({"type": "done", "text": session.eos_text})
                 )
-                session = StreamingSession(model, sp, temperature=0.0)
+                # Pre-allocate next session off the critical path.
+                pre_allocated_session = await asyncio.to_thread(_create_session)
+                session = None
+                audio_buffer = np.array([], dtype=np.float32)
                 first_chunk_received_at = None
                 first_delta_sent = False
 
         elif isinstance(message, str):
-            if message.strip().lower() == "commit":
+            cmd = message.strip().lower()
+            if cmd == "start_session":
+                log("[server] Received start_session, creating new session...", force=True)
+                if pre_allocated_session is not None:
+                    session = pre_allocated_session
+                    pre_allocated_session = None
+                    log("[server] Using pre-allocated session", force=True)
+                else:
+                    session = await asyncio.to_thread(_create_session)
+                first_chunk_received_at = None
+                first_delta_sent = False
+                audio_buffer = np.array([], dtype=np.float32)
+
+            elif cmd == "commit":
+                if session is None:
+                    continue
+                # Flush any remaining buffered audio before finalizing.
+                if len(audio_buffer) > 0:
+                    audio_buffer, first_delta_sent = await _feed_buffered_audio(
+                        session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
+                    )
                 log("[server] Received commit, finalizing session...", force=True)
                 t0 = time.perf_counter()
                 await asyncio.to_thread(session.finalize)
@@ -275,9 +329,12 @@ async def handle_client(websocket):
                 await websocket.send(
                     json.dumps({"type": "done", "text": final_text, "finalize_ms": (t1 - t0) * 1000.0})
                 )
-                session = StreamingSession(model, sp, temperature=0.0)
+                session = None
                 first_chunk_received_at = None
                 first_delta_sent = False
+                audio_buffer = np.array([], dtype=np.float32)
+                # Pre-allocate next session off the critical path.
+                pre_allocated_session = await asyncio.to_thread(_create_session)
 
     log("[server] Client disconnected", force=True)
 

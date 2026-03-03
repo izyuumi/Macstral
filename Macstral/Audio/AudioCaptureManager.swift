@@ -22,8 +22,10 @@ final class AudioCaptureManager {
 
     private var converter: AVAudioConverter?
 
-    /// ~0.064 s worth of samples at 16 kHz (1 024 frames ÷ 16 000 Hz).
-    private let tapBufferSize: AVAudioFrameCount = 1_024
+    /// ~0.032 s worth of samples at 16 kHz (512 frames ÷ 16 000 Hz).
+    /// Smaller buffers reduce audio delivery granularity, getting data to the
+    /// server sooner at the cost of slightly more frequent WebSocket sends.
+    private let tapBufferSize: AVAudioFrameCount = 512
 
     // MARK: - Capture control
 

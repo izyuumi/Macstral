@@ -7,6 +7,7 @@ class WebSocketClient: NSObject {
 
     // MARK: - Callbacks
 
+    var onConnected: (() -> Void)?
     var onSessionCreated: (() -> Void)?
     var onTranscriptDelta: ((String) -> Void)?
     var onTranscriptDone: ((String) -> Void)?
@@ -22,7 +23,10 @@ class WebSocketClient: NSObject {
     private var isAcceptingAudio = false
     private var cumulativeDeltaText = ""
 
-    var hasActiveSession: Bool { isConnected }
+    /// Whether the underlying WebSocket transport is connected.
+    var hasActiveConnection: Bool { isConnected }
+    /// Whether a dictation session is active and audio can be sent.
+    var hasActiveSession: Bool { isConnected && isAcceptingAudio }
 
     // MARK: - Connection Management
 
@@ -87,6 +91,33 @@ class WebSocketClient: NSObject {
             }
         }
         return true
+    }
+
+    // MARK: - Session Management (Persistent Connection)
+
+    /// Start a new dictation session on the already-open WebSocket.
+    /// Sends "start_session" to the server and immediately marks the client
+    /// as ready to accept audio. No round-trip wait is needed because
+    /// WebSocket messages are ordered — the server will process start_session
+    /// before any subsequent audio chunks.
+    func startSession() {
+        guard isConnected, let task = webSocketTask else { return }
+        cumulativeDeltaText = ""
+        isAcceptingAudio = true
+        task.send(.string("start_session")) { [weak self] error in
+            if let error {
+                Task { @MainActor [weak self] in
+                    self?.onError?(error)
+                }
+            }
+        }
+        onSessionCreated?()
+    }
+
+    /// End the current dictation session without closing the WebSocket.
+    func endSession() {
+        isAcceptingAudio = false
+        cumulativeDeltaText = ""
     }
 
     // MARK: - Receive Loop
@@ -174,16 +205,15 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
-        // The WebSocket handshake has completed — now it is safe to mark the session connected.
+        // The WebSocket handshake has completed — the transport is ready.
+        // Session creation is deferred to startSession() which sends "start_session".
         Task { @MainActor [weak self] in
             guard let self else { return }
             // Identity check: ignore callbacks from a stale or replaced task.
             guard self.webSocketTask === webSocketTask else { return }
             self.isConnected = true
-            self.isAcceptingAudio = true
-            self.cumulativeDeltaText = ""
-            self.onSessionCreated?()
             self.receiveMessages()
+            self.onConnected?()
         }
     }
 
