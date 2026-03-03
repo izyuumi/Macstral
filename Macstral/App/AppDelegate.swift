@@ -146,8 +146,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 in: &self.wsHandshakeSamples
             )
             // Guard against a late handshake arriving after the user cancelled dictation.
-            // If dictationStatus is no longer .listening the session is stale; tear it down.
-            guard self.appState.dictationStatus == .listening else {
+            // Allow .processing too: key-up may have occurred before the handshake completed,
+            // and we still want to flush buffered audio rather than drop it.
+            guard self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing else {
                 self.webSocketClient.disconnect()
                 return
             }
@@ -292,7 +293,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if debugTranscriptionLogging && (audioChunkCount == 1 || audioChunkCount % 20 == 0) {
                 print("[Dictation] Audio chunk #\(audioChunkCount): \(data.count) bytes, total buffered=\(sessionBufferedAudioBytes)")
             }
-        } else if appState.dictationStatus == .listening && !webSocketClient.hasActiveSession {
+        } else if (appState.dictationStatus == .listening || appState.dictationStatus == .processing) && !webSocketClient.hasActiveSession {
+            // Also buffer audio when in .processing state (key released before WS handshake)
+            // so that speech captured before the WebSocket opens is not dropped.
             enqueuePendingAudioChunk(data)
         }
     }
@@ -385,7 +388,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let heldFor = ProcessInfo.processInfo.systemUptime - dictationStartedAt
         if heldFor < minimumKeyHoldToStopSeconds {
-            print("[Dictation] stopDictation: ignored, held too briefly (\(heldFor)s)")
+            print("[Dictation] stopDictation: held too briefly (\(heldFor)s), stopping dictation")
+            finishDictation()
             return
         }
 

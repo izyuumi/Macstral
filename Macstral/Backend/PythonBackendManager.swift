@@ -420,6 +420,7 @@ final class PythonBackendManager: NSObject {
                 return resolvedPort
             }
         } catch {
+            expectedTerminatingProcessID = ObjectIdentifier(process)
             process.terminate()
             throw error
         }
@@ -534,7 +535,18 @@ final class PythonBackendManager: NSObject {
                         accumulated.append(chunk)
 
                         guard let text = String(data: accumulated, encoding: .utf8) else { continue }
-                        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+                        let endsWithNewline = text.hasSuffix("\n")
+                        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+
+                        // Only process complete (newline-terminated) lines to avoid parsing a
+                        // partial port number from an incomplete stdout chunk. Keep any trailing
+                        // fragment in `accumulated` so it is completed by the next read.
+                        if !endsWithNewline, let lastFragment = lines.last {
+                            accumulated = Data(lastFragment.utf8)
+                            lines.removeLast()
+                        } else {
+                            accumulated = Data()
+                        }
 
                         for line in lines {
                             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
