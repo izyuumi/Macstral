@@ -317,6 +317,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleAudioChunk(_ data: Data) {
         guard appState.dictationStatus == .listening || appState.dictationStatus == .processing else { return }
 
+        // Compute RMS audio level for waveform visualization
+        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
+        let sumOfSquares = samples.reduce(0.0) { $0 + Double($1) * Double($1) }
+        let rms = sqrt(sumOfSquares / Double(max(samples.count, 1)))
+        let db = 20 * log10(max(rms, 1) / 32768.0)
+        let normalized = Float(max(0, min(1, (db + 50) / 50)))
+        appState.audioLevel = normalized
+
         if appState.dictationMode == .normal {
             // Normal mode: always buffer locally — audio is sent in bulk when the user stops.
             enqueuePendingAudioChunk(data)
@@ -533,6 +541,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             audioManager.stopCapture()
             isAudioCaptureActive = false
         }
+        appState.audioLevel = 0
         appState.dictationStatus = .idle
         webSocketClient.endSession()
         hudPanel?.hide()

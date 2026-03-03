@@ -56,6 +56,7 @@ final class AppState {
     // MARK: Dictation
 
     var dictationStatus: DictationStatus = .idle
+    var audioLevel: Float = 0.0
     var liveTranscript: String = ""
     var finalTranscript: String = ""
 
