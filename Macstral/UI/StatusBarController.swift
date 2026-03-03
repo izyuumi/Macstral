@@ -5,6 +5,7 @@ final class StatusBarController {
     private var statusItem: NSStatusItem
     private var statusMenuItem: NSMenuItem
     var onPreferencesRequested: (() -> Void)?
+    var onPasteLastTranscriptionRequested: (() -> Void)?
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -44,6 +45,14 @@ final class StatusBarController {
         prefsItem.target = self
         menu.addItem(prefsItem)
 
+        let pasteLastTranscriptionItem = NSMenuItem(
+            title: "Paste Last Transcription",
+            action: #selector(pasteLastTranscription),
+            keyEquivalent: ""
+        )
+        pasteLastTranscriptionItem.target = self
+        menu.addItem(pasteLastTranscriptionItem)
+
         menu.addItem(.separator())
 
         // Quit item
@@ -60,6 +69,10 @@ final class StatusBarController {
 
     @objc private func openPreferences() {
         onPreferencesRequested?()
+    }
+
+    @objc private func pasteLastTranscription() {
+        onPasteLastTranscriptionRequested?()
     }
 
     // MARK: - Public Interface

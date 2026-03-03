@@ -335,6 +335,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController?.onPreferencesRequested = { [weak self] in
             self?.preferencesWindow?.show()
         }
+        statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
+            self?.pasteLastTranscription()
+        }
+    }
+
+    private func pasteLastTranscription() {
+        let finalTranscript = appState.finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !finalTranscript.isEmpty else { return }
+        textInserter.insertText(finalTranscript)
     }
 
     // MARK: - Hotkey
