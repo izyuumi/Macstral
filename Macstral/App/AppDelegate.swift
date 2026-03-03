@@ -180,8 +180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     in: &self.firstAudioToFirstDeltaSamples
                 )
             }
-            if !transcript.isEmpty {
-                self.latestTranscript = transcript
+            let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                self.latestTranscript = trimmed
             }
             self.appState.liveTranscript = self.latestTranscript
         }
