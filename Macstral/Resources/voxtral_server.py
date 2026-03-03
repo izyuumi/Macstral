@@ -228,10 +228,11 @@ def _create_session():
     return StreamingSession(model, sp, temperature=0.0)
 
 
-# Batching threshold: accumulate audio until this many float32 samples
-# (~500ms at 16 kHz = 8000 samples) before feeding to the model, reducing
-# per-chunk thread-pool scheduling overhead.
-AUDIO_BATCH_THRESHOLD = 8_000
+# Batching thresholds: use a smaller batch for the first feed to minimise
+# time-to-first-delta, then switch to a larger batch for steady-state
+# efficiency (reduces thread-pool scheduling overhead).
+FIRST_BATCH_THRESHOLD = 2_000   # ~125ms at 16 kHz — fast first delta
+AUDIO_BATCH_THRESHOLD = 8_000   # ~500ms at 16 kHz — steady-state
 
 
 async def _feed_buffered_audio(session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket):
@@ -264,6 +265,7 @@ async def handle_client(websocket):
     pre_allocated_session = None
     first_chunk_received_at = None
     first_delta_sent = False
+    first_feed_done = False
     audio_buffer = np.array([], dtype=np.float32)
 
     async for message in websocket:
@@ -280,13 +282,16 @@ async def handle_client(websocket):
             audio_f32 = np.frombuffer(message, dtype=np.int16).astype(np.float32) / 32768.0
             audio_buffer = np.concatenate([audio_buffer, audio_f32])
 
-            # Feed in batches to reduce thread-pool scheduling overhead.
-            if len(audio_buffer) >= AUDIO_BATCH_THRESHOLD:
+            # Use a smaller threshold for the first batch (fast first delta),
+            # then switch to the larger steady-state threshold.
+            threshold = FIRST_BATCH_THRESHOLD if not first_feed_done else AUDIO_BATCH_THRESHOLD
+            if len(audio_buffer) >= threshold:
                 audio_buffer, first_delta_sent = await _feed_buffered_audio(
                     session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
                 )
+                first_feed_done = True
 
-            if session.eos_text is not None:
+            if getattr(session, "eos_text", None) is not None:
                 log(f"[server] EOS detected during feed: \"{session.eos_text[:80]}\"")
                 await websocket.send(
                     json.dumps({"type": "done", "text": session.eos_text})
@@ -297,6 +302,7 @@ async def handle_client(websocket):
                 audio_buffer = np.array([], dtype=np.float32)
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
 
         elif isinstance(message, str):
             cmd = message.strip().lower()
@@ -310,6 +316,7 @@ async def handle_client(websocket):
                     session = await asyncio.to_thread(_create_session)
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
 
             elif cmd == "commit":
@@ -332,6 +339,7 @@ async def handle_client(websocket):
                 session = None
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
                 # Pre-allocate next session off the critical path.
                 pre_allocated_session = await asyncio.to_thread(_create_session)
