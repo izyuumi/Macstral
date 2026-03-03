@@ -153,18 +153,29 @@ final class KeyRecorderNSView: NSView {
 struct PreferencesView: View {
     @State private var key: Key
     @State private var modifiers: NSEvent.ModifierFlags
+    @State private var dictationMode: DictationMode
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
 
     init(onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
         let (k, m) = HotkeySettings.load()
         _key = State(initialValue: k)
         _modifiers = State(initialValue: m)
+        _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
         self.onHotkeyChanged = onHotkeyChanged
     }
 
     var body: some View {
         Form {
             Section {
+                LabeledContent("Dictation Mode") {
+                    Picker("", selection: $dictationMode) {
+                        Text("Normal").tag(DictationMode.normal)
+                        Text("Streaming").tag(DictationMode.streaming)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 160)
+                }
                 LabeledContent("Hotkey") {
                     KeyRecorderView(key: $key, modifiers: $modifiers)
                         .frame(width: 120, height: 28)
@@ -176,6 +187,9 @@ struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .onChange(of: dictationMode) { _, newMode in
+            UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
+        }
         .onChange(of: key) { _, newKey in
             onHotkeyChanged(newKey, modifiers)
         }
