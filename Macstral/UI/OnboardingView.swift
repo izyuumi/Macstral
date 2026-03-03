@@ -39,18 +39,10 @@ struct OnboardingView: View {
                     action: requestMicrophonePermission
                 )
 
-                PermissionRow(
-                    icon: "waveform.badge.mic",
-                    title: "Speech Recognition",
-                    description: "Required to transcribe your voice on-device.",
-                    isGranted: appState.hasSpeechPermission,
-                    actionLabel: "Grant",
-                    action: requestSpeechPermission
-                )
-
-                ModelPreparationRow(
-                    status: appState.modelPreparationStatus,
-                    hasSpeechPermission: appState.hasSpeechPermission
+                VoxtralSetupRow(
+                    step: appState.setupStep,
+                    progress: appState.setupProgress,
+                    statusText: appState.setupStatusText
                 )
 
                 PermissionRow(
@@ -72,9 +64,9 @@ struct OnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(!(appState.hasMicPermission && appState.hasSpeechPermission && appState.hasAccessibilityPermission && appState.isModelReadyForUse))
+            .disabled(!(appState.hasMicPermission && appState.hasAccessibilityPermission && appState.isVoxtralReady))
 
-            if case .unavailable(let message) = appState.modelPreparationStatus {
+            if case .error(let message) = appState.setupStep {
                 Text(message)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -93,13 +85,6 @@ struct OnboardingView: View {
                 appState.hasMicPermission = granted
                 onPermissionStateChanged?()
             }
-        }
-    }
-
-    private func requestSpeechPermission() {
-        Task { @MainActor in
-            appState.hasSpeechPermission = await PermissionChecker.requestSpeechPermission()
-            onPermissionStateChanged?()
         }
     }
 
@@ -152,52 +137,31 @@ private struct PermissionRow: View {
     }
 }
 
-private struct ModelPreparationRow: View {
-    let status: ModelPreparationStatus
-    let hasSpeechPermission: Bool
+// MARK: - VoxtralSetupRow
+
+private struct VoxtralSetupRow: View {
+    let step: SetupStep
+    let progress: Double
+    let statusText: String
 
     private var title: String {
-        "On-device Model"
+        "Voxtral Model"
     }
 
     private var detail: String {
-        if !hasSpeechPermission {
-            return "Grant Speech Recognition permission to check model availability."
+        if statusText.isEmpty {
+            switch step {
+            case .idle:
+                return "Waiting to set up Voxtral..."
+            case .ready:
+                return "Model is ready."
+            case .error(let msg):
+                return msg
+            default:
+                return "Setting up..."
+            }
         }
-        switch status {
-        case .unknown:
-            return "Waiting to check model availability."
-        case .checking:
-            return "Checking model availability..."
-        case .preparing:
-            return "Preparing model..."
-        case .ready:
-            return "Model is ready."
-        case .unavailable:
-            return "Model unavailable."
-        }
-    }
-
-    private var iconName: String {
-        switch status {
-        case .ready:
-            return "checkmark.circle.fill"
-        case .unavailable:
-            return "xmark.circle.fill"
-        default:
-            return "arrow.trianglehead.2.clockwise"
-        }
-    }
-
-    private var iconColor: Color {
-        switch status {
-        case .ready:
-            return .green
-        case .unavailable:
-            return .red
-        default:
-            return .accentColor
-        }
+        return statusText
     }
 
     var body: some View {
@@ -207,25 +171,45 @@ private struct ModelPreparationRow: View {
                 .foregroundColor(.accentColor)
                 .frame(width: 32)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .fontWeight(.semibold)
                 Text(detail)
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                if isInProgress {
+                    if progress > 0 {
+                        ProgressView(value: progress)
+                            .progressViewStyle(.linear)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
             }
 
             Spacer()
 
-            if status == .checking || status == .preparing {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: iconName)
-                    .foregroundColor(iconColor)
+            if case .ready = step {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.system(size: 20))
+            } else if case .error = step {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.red)
                     .font(.system(size: 20))
             }
         }
         .padding(.horizontal, 4)
+    }
+
+    private var isInProgress: Bool {
+        switch step {
+        case .downloadingPython, .installingDeps, .downloadingModel, .launching:
+            return true
+        default:
+            return false
+        }
     }
 }
