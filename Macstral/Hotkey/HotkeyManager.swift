@@ -18,28 +18,26 @@ struct HotkeySettings {
         key == .function && mods.isEmpty
     }
 
-    static func load() -> (key: Key, modifiers: NSEvent.ModifierFlags) {
-        let ud = UserDefaults.standard
-        if ud.object(forKey: keyCodeUD) != nil,
-           let key = Key(carbonKeyCode: UInt32(ud.integer(forKey: keyCodeUD))) {
-            let rawMods = UInt(bitPattern: ud.integer(forKey: modifiersUD))
+    nonisolated static func load(from defaults: UserDefaults = .standard) -> (key: Key, modifiers: NSEvent.ModifierFlags) {
+        if defaults.object(forKey: keyCodeUD) != nil,
+           let key = Key(carbonKeyCode: UInt32(defaults.integer(forKey: keyCodeUD))) {
+            let rawMods = UInt(bitPattern: defaults.integer(forKey: modifiersUD))
             return (key, NSEvent.ModifierFlags(rawValue: rawMods))
         }
         return (defaultKey, defaultModifiers)
     }
 
-    static func save(key: Key, modifiers: NSEvent.ModifierFlags) {
-        let ud = UserDefaults.standard
-        ud.set(Int(key.carbonKeyCode), forKey: keyCodeUD)
-        ud.set(Int(bitPattern: modifiers.rawValue), forKey: modifiersUD)
+    nonisolated static func save(key: Key, modifiers: NSEvent.ModifierFlags, to defaults: UserDefaults = .standard) {
+        defaults.set(Int(key.carbonKeyCode), forKey: keyCodeUD)
+        defaults.set(Int(bitPattern: modifiers.rawValue), forKey: modifiersUD)
     }
 
-    static func reset() {
-        save(key: defaultKey, modifiers: defaultModifiers)
+    nonisolated static func reset(in defaults: UserDefaults = .standard) {
+        save(key: defaultKey, modifiers: defaultModifiers, to: defaults)
     }
 
     /// Human-readable label, e.g. "fn", "⌥Space", "⌃⌘A"
-    static func displayString(key: Key, modifiers: NSEvent.ModifierFlags) -> String {
+    nonisolated static func displayString(key: Key, modifiers: NSEvent.ModifierFlags) -> String {
         var parts = ""
         if modifiers.contains(.control) { parts += "⌃" }
         if modifiers.contains(.option)  { parts += "⌥" }
