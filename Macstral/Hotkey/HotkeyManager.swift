@@ -5,11 +5,18 @@ import HotKey
 // MARK: - HotkeySettings
 
 struct HotkeySettings {
-    static let defaultKey: Key = .space
-    static let defaultModifiers: NSEvent.ModifierFlags = [.option]
+    /// Sentinel: fn key is represented as Key.function with empty modifiers.
+    static let defaultKey: Key = .function
+    static let defaultModifiers: NSEvent.ModifierFlags = []
 
     private static let keyCodeUD   = "hotkeyKeyCode"
     private static let modifiersUD = "hotkeyModifiers"
+
+    // Special carbon key code used to persist "fn key" mode.
+    // Key.function.carbonKeyCode == kVK_Function (0x3F).
+    static var isFnKey: (Key, NSEvent.ModifierFlags) -> Bool = { key, mods in
+        key == .function && mods.isEmpty
+    }
 
     static func load() -> (key: Key, modifiers: NSEvent.ModifierFlags) {
         let ud = UserDefaults.standard
@@ -31,7 +38,7 @@ struct HotkeySettings {
         save(key: defaultKey, modifiers: defaultModifiers)
     }
 
-    /// Human-readable label, e.g. "⌥Space"
+    /// Human-readable label, e.g. "fn", "⌥Space", "⌃⌘A"
     static func displayString(key: Key, modifiers: NSEvent.ModifierFlags) -> String {
         var parts = ""
         if modifiers.contains(.control) { parts += "⌃" }
@@ -48,6 +55,7 @@ struct HotkeySettings {
 extension Key {
     var displayLabel: String {
         switch self {
+        case .function:      return "fn"
         case .space:         return "Space"
         case .return:        return "↩"
         case .tab:           return "⇥"
@@ -83,7 +91,6 @@ extension Key {
         case .f19:           return "F19"
         case .f20:           return "F20"
         default:
-            // Use UCKeyTranslate to get the printable character for the key code
             return carbonKeyLabel ?? "?"
         }
     }
@@ -121,6 +128,8 @@ extension Key {
 
 class HotkeyManager {
     private var hotKey: HotKey?
+    private var flagsMonitor: Any?
+    private var fnWasDown = false
 
     var onKeyDown: (() -> Void)?
     var onKeyUp: (() -> Void)?
@@ -137,15 +146,39 @@ class HotkeyManager {
 
     func teardown() {
         hotKey = nil
+        removeFlagsMonitor()
     }
 
     // MARK: - Private
 
     private func configure(key: Key, modifiers: NSEvent.ModifierFlags) {
         hotKey = nil
-        let hk = HotKey(key: key, modifiers: modifiers)
-        hk.keyDownHandler = { [weak self] in self?.onKeyDown?() }
-        hk.keyUpHandler   = { [weak self] in self?.onKeyUp?() }
-        hotKey = hk
+        removeFlagsMonitor()
+
+        if HotkeySettings.isFnKey(key, modifiers) {
+            // fn generates flagsChanged events, not keyDown — monitor flags directly.
+            fnWasDown = false
+            flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                guard let self else { return }
+                let isFnDown = event.modifierFlags.contains(.function)
+                if isFnDown && !self.fnWasDown {
+                    self.fnWasDown = true
+                    self.onKeyDown?()
+                } else if !isFnDown && self.fnWasDown {
+                    self.fnWasDown = false
+                    self.onKeyUp?()
+                }
+            }
+        } else {
+            let hk = HotKey(key: key, modifiers: modifiers)
+            hk.keyDownHandler = { [weak self] in self?.onKeyDown?() }
+            hk.keyUpHandler   = { [weak self] in self?.onKeyUp?() }
+            hotKey = hk
+        }
+    }
+
+    private func removeFlagsMonitor() {
+        if let m = flagsMonitor { NSEvent.removeMonitor(m); flagsMonitor = nil }
+        fnWasDown = false
     }
 }

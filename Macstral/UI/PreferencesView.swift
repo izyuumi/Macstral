@@ -93,9 +93,13 @@ final class KeyRecorderNSView: NSView {
         isRecording = true
         refresh()
 
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
-            self.handleKeyEvent(event)
+            if event.type == .flagsChanged {
+                self.handleFlagsEvent(event)
+            } else {
+                self.handleKeyEvent(event)
+            }
             return nil // consume
         }
     }
@@ -106,8 +110,22 @@ final class KeyRecorderNSView: NSView {
         refresh()
     }
 
+    private func handleFlagsEvent(_ event: NSEvent) {
+        // Capture fn key: it appears as a flagsChanged event with .function set,
+        // with no other standard modifier flags and no associated key code for regular keys.
+        let standardMods: NSEvent.ModifierFlags = [.command, .option, .control, .shift]
+        let hasFn = event.modifierFlags.contains(.function)
+        let hasStandard = !event.modifierFlags.intersection(standardMods).isEmpty
+
+        if hasFn && !hasStandard {
+            currentKey = .function
+            currentModifiers = []
+            onRecorded?(.function, [])
+            stopRecording()
+        }
+    }
+
     private func handleKeyEvent(_ event: NSEvent) {
-        // Ignore pure modifier presses
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         guard let key = Key(carbonKeyCode: UInt32(event.keyCode)) else {
             stopRecording()
