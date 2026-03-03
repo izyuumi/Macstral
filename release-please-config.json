@@ -2,7 +2,6 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "Macstral",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true
     }
