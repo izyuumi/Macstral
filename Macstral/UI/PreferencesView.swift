@@ -1,0 +1,180 @@
+import AppKit
+import SwiftUI
+import HotKey
+
+// MARK: - KeyRecorderView (NSViewRepresentable)
+
+/// A field that records a new hotkey when clicked.
+struct KeyRecorderView: NSViewRepresentable {
+    @Binding var key: Key
+    @Binding var modifiers: NSEvent.ModifierFlags
+
+    func makeNSView(context: Context) -> KeyRecorderNSView {
+        let view = KeyRecorderNSView()
+        view.onRecorded = { newKey, newMods in
+            key = newKey
+            modifiers = newMods
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: KeyRecorderNSView, context: Context) {
+        nsView.currentKey = key
+        nsView.currentModifiers = modifiers
+        nsView.refresh()
+    }
+}
+
+final class KeyRecorderNSView: NSView {
+    var currentKey: Key = HotkeySettings.defaultKey
+    var currentModifiers: NSEvent.ModifierFlags = HotkeySettings.defaultModifiers
+    var onRecorded: ((Key, NSEvent.ModifierFlags) -> Void)?
+
+    private var isRecording = false
+    private let label = NSTextField(labelWithString: "")
+    private var monitor: Any?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func setup() {
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.borderWidth = 1
+        updateAppearance()
+
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.alignment = .center
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+        ])
+        refresh()
+    }
+
+    func refresh() {
+        if isRecording {
+            label.stringValue = "Press hotkey…"
+            label.textColor = .secondaryLabelColor
+        } else {
+            label.stringValue = HotkeySettings.displayString(key: currentKey, modifiers: currentModifiers)
+            label.textColor = .labelColor
+        }
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        layer?.borderColor = isRecording
+            ? NSColor.controlAccentColor.cgColor
+            : NSColor.separatorColor.cgColor
+        layer?.backgroundColor = isRecording
+            ? NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
+            : NSColor.controlBackgroundColor.cgColor
+    }
+
+    // MARK: - Click to start recording
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        startRecording()
+    }
+
+    private func startRecording() {
+        guard !isRecording else { return }
+        isRecording = true
+        refresh()
+
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            self.handleKeyEvent(event)
+            return nil // consume
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        refresh()
+    }
+
+    private func handleKeyEvent(_ event: NSEvent) {
+        // Ignore pure modifier presses
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        guard let key = Key(carbonKeyCode: UInt32(event.keyCode)) else {
+            stopRecording()
+            return
+        }
+        // Escape cancels recording without changing the hotkey
+        if key == .escape && modifiers.isEmpty {
+            stopRecording()
+            return
+        }
+        currentKey = key
+        currentModifiers = modifiers
+        onRecorded?(key, modifiers)
+        stopRecording()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        stopRecording()
+        return super.resignFirstResponder()
+    }
+}
+
+// MARK: - PreferencesView
+
+struct PreferencesView: View {
+    @State private var key: Key
+    @State private var modifiers: NSEvent.ModifierFlags
+    var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
+
+    init(onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+        let (k, m) = HotkeySettings.load()
+        _key = State(initialValue: k)
+        _modifiers = State(initialValue: m)
+        self.onHotkeyChanged = onHotkeyChanged
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Hotkey") {
+                    KeyRecorderView(key: $key, modifiers: $modifiers)
+                        .frame(width: 120, height: 28)
+                }
+            } footer: {
+                Text("Click the field and press a key combination to set a new hotkey.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+        }
+        .formStyle(.grouped)
+        .onChange(of: key) { _, newKey in
+            onHotkeyChanged(newKey, modifiers)
+        }
+        .onChange(of: modifiers.rawValue) { _, _ in
+            onHotkeyChanged(key, modifiers)
+        }
+        .toolbar {
+            ToolbarItem(placement: .destructiveAction) {
+                Button("Reset to Default") {
+                    key = HotkeySettings.defaultKey
+                    modifiers = HotkeySettings.defaultModifiers
+                    onHotkeyChanged(key, modifiers)
+                }
+                .foregroundStyle(.red)
+            }
+        }
+        .frame(width: 360)
+        .padding(.vertical, 8)
+    }
+}

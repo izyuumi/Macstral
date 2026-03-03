@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
+    private var preferencesWindow: PreferencesWindow?
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
@@ -49,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusBarController = StatusBarController()
+        setupPreferences()
         setupBackendCallbacks()
         setupWebSocketCallbacks()
         setupAudioCallback()
@@ -297,6 +299,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Also buffer audio when in .processing state (key released before WS handshake)
             // so that speech captured before the WebSocket opens is not dropped.
             enqueuePendingAudioChunk(data)
+        }
+    }
+
+    // MARK: - Preferences
+
+    private func setupPreferences() {
+        let prefsWindow = PreferencesWindow()
+        prefsWindow.onHotkeyChanged = { [weak self] key, mods in
+            self?.hotkeyManager.reconfigure(key: key, modifiers: mods)
+        }
+        preferencesWindow = prefsWindow
+
+        statusBarController?.onPreferencesRequested = { [weak self] in
+            self?.preferencesWindow?.show()
         }
     }
 
