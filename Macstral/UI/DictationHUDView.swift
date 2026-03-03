@@ -10,26 +10,38 @@ struct DictationHUDView: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "mic.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
+            if appState.dictationStatus == .processing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .colorScheme(.dark)
 
-                // Waveform bars
-                HStack(spacing: 3) {
-                    ForEach(0..<5, id: \.self) { index in
-                        let level = CGFloat(appState.audioLevel * barScales[index])
-                        let barHeight = minBarHeight + (maxBarHeight - minBarHeight) * level
-                        Capsule()
-                            .fill(Color.white)
-                            .frame(width: 3, height: barHeight)
-                            .animation(.spring(duration: 0.15), value: appState.audioLevel)
-                    }
+                    Text("Processing...")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
                 }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
 
-                Text("Listening...")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
+                    // Waveform bars
+                    HStack(spacing: 3) {
+                        ForEach(0..<5, id: \.self) { index in
+                            let level = CGFloat(appState.audioLevel * barScales[index])
+                            let barHeight = minBarHeight + (maxBarHeight - minBarHeight) * level
+                            Capsule()
+                                .fill(Color.white)
+                                .frame(width: 3, height: barHeight)
+                                .animation(.spring(duration: 0.15), value: appState.audioLevel)
+                        }
+                    }
+
+                    Text("Listening...")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white)
+                }
             }
 
             if !appState.liveTranscript.isEmpty {

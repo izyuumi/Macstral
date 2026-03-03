@@ -492,8 +492,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         liveCommitTask = nil
 
         if appState.dictationMode == .normal {
-            // Normal mode: hide HUD immediately — processing happens silently in background.
-            hudPanel?.hide()
+            // Normal mode: keep HUD visible to show processing state.
             // Start WS session now to flush all buffered audio and commit.
             // The onSessionCreated callback will flush pending chunks and send commit.
             print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
