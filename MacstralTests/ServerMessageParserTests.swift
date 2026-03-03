@@ -40,8 +40,8 @@ final class ServerMessageParserTests: XCTestCase {
         guard case let .delta(_, _, firstChunk, feedAudio) = result else {
             XCTFail("Expected .delta, got \(result)"); return
         }
-        XCTAssertEqual(firstChunk, 42.5, accuracy: 0.001)
-        XCTAssertEqual(feedAudio, 10.1, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(firstChunk), 42.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(feedAudio), 10.1, accuracy: 0.001)
     }
 
     func testDeltaMissingTimingFieldsAreNil() throws {
@@ -63,7 +63,7 @@ final class ServerMessageParserTests: XCTestCase {
             XCTFail("Expected .done, got \(result)"); return
         }
         XCTAssertEqual(text, "final transcript")
-        XCTAssertEqual(finalizeMs, 150.0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(finalizeMs), 150.0, accuracy: 0.001)
     }
 
     func testDoneMissingFinalizeMs() throws {
