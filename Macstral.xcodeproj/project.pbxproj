@@ -10,9 +10,28 @@
 		71F082242F53706C002241FA /* HotKey in Frameworks */ = {isa = PBXBuildFile; productRef = 71F081312F536BB2002241FA /* HotKey */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AA0007112F53706C002241FA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 71F081162F536BB1002241FA /* Project */;
+			proxyType = 1;
+			remoteGlobalIDString = 71F0811D2F536BB1002241FA;
+			remoteInfo = Macstral;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		71F0811E2F536BB1002241FA /* Macstral.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Macstral.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0001112F53706C002241FA /* MacstralTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacstralTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		AA0002112F53706C002241FA /* MacstralTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MacstralTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
 		71F081322F536BB2002241FA /* Exceptions for "Macstral" folder in "Macstral" target */ = {
@@ -44,6 +63,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0004112F53706C002241FA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,6 +77,7 @@
 			isa = PBXGroup;
 			children = (
 				71F081202F536BB1002241FA /* Macstral */,
+				AA0002112F53706C002241FA /* MacstralTests */,
 				71F0811F2F536BB1002241FA /* Products */,
 			);
 			sourceTree = "<group>";
@@ -59,6 +86,7 @@
 			isa = PBXGroup;
 			children = (
 				71F0811E2F536BB1002241FA /* Macstral.app */,
+				AA0001112F53706C002241FA /* MacstralTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -89,6 +117,27 @@
 			productReference = 71F0811E2F536BB1002241FA /* Macstral.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0006112F53706C002241FA /* MacstralTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA000B112F53706C002241FA /* Build configuration list for PBXNativeTarget "MacstralTests" */;
+			buildPhases = (
+				AA0003112F53706C002241FA /* Sources */,
+				AA0004112F53706C002241FA /* Frameworks */,
+				AA0005112F53706C002241FA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0008112F53706C002241FA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0002112F53706C002241FA /* MacstralTests */,
+			);
+			name = MacstralTests;
+			productName = MacstralTests;
+			productReference = AA0001112F53706C002241FA /* MacstralTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -101,6 +150,10 @@
 				TargetAttributes = {
 					71F0811D2F536BB1002241FA = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					AA0006112F53706C002241FA = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 71F0811D2F536BB1002241FA;
 					};
 				};
 			};
@@ -122,12 +175,20 @@
 			projectRoot = "";
 			targets = (
 				71F0811D2F536BB1002241FA /* Macstral */,
+				AA0006112F53706C002241FA /* MacstralTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		71F0811C2F536BB1002241FA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0005112F53706C002241FA /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -144,7 +205,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0003112F53706C002241FA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA0008112F53706C002241FA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 71F0811D2F536BB1002241FA /* Macstral */;
+			targetProxy = AA0007112F53706C002241FA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		71F081272F536BB2002241FA /* Debug */ = {
@@ -201,7 +277,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -259,7 +335,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -335,6 +411,36 @@
 			};
 			name = Release;
 		};
+		AA0009112F53706C002241FA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AN5KM8QGEF;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = to.yumi.MacstralTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Macstral.app/Contents/MacOS/Macstral";
+			};
+			name = Debug;
+		};
+		AA000A112F53706C002241FA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AN5KM8QGEF;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = to.yumi.MacstralTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Macstral.app/Contents/MacOS/Macstral";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -352,6 +458,15 @@
 			buildConfigurations = (
 				71F0812A2F536BB2002241FA /* Debug */,
 				71F0812B2F536BB2002241FA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA000B112F53706C002241FA /* Build configuration list for PBXNativeTarget "MacstralTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0009112F53706C002241FA /* Debug */,
+				AA000A112F53706C002241FA /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

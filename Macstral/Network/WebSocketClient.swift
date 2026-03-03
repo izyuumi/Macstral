@@ -153,15 +153,9 @@ class WebSocketClient: NSObject {
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .string(let text):
-            guard let data = text.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let type = json["type"] as? String,
-                  let transcript = json["text"] as? String
-            else { return }
-
-            switch type {
-            case "delta":
-                let isIncremental = (json["is_incremental"] as? Bool) ?? false
+            guard let result = parseServerMessage(text) else { return }
+            switch result {
+            case .delta(let transcript, let isIncremental, let firstChunkMs, let feedAudioMs):
                 if isIncremental {
                     cumulativeDeltaText += transcript
                     onTranscriptDelta?(cumulativeDeltaText)
@@ -169,22 +163,16 @@ class WebSocketClient: NSObject {
                     cumulativeDeltaText = transcript
                     onTranscriptDelta?(transcript)
                 }
-                if let firstChunkToFirstDeltaMs = json["first_chunk_to_first_delta_ms"] as? Double {
-                    onTimingEvent?(.firstChunkToFirstDelta(firstChunkToFirstDeltaMs))
-                }
-                if let feedAudioMs = json["feed_audio_ms"] as? Double {
-                    onTimingEvent?(.feedAudio(feedAudioMs))
-                }
-            case "done":
+                if let ms = firstChunkMs { onTimingEvent?(.firstChunkToFirstDelta(ms)) }
+                if let ms = feedAudioMs  { onTimingEvent?(.feedAudio(ms)) }
+
+            case .done(let transcript, let finalizeMs):
                 cumulativeDeltaText = ""
                 onTranscriptDone?(transcript)
-                if let finalizeMs = json["finalize_ms"] as? Double {
-                    onTimingEvent?(.finalize(finalizeMs))
-                }
-            case "error":
-                onError?(WebSocketError.serverError(transcript))
-            default:
-                break
+                if let ms = finalizeMs { onTimingEvent?(.finalize(ms)) }
+
+            case .error(let message):
+                onError?(WebSocketError.serverError(message))
             }
 
         case .data:
