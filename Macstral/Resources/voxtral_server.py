@@ -173,7 +173,7 @@ def _patched_load_converted(model_path):
     return model, config
 
 
-# Apply the patch so voxmlx.load_model() handles both formats.
+# Apply the patch so converted-weight loading handles both formats.
 _vw._load_converted = _patched_load_converted
 
 import voxmlx  # noqa: E402
@@ -204,9 +204,34 @@ def log(msg: str, *, force: bool = False):
     print(msg, file=sys.stderr, flush=True)
 
 
+def _set_mx_cache_limit(limit_bytes: int):
+    set_cache_limit = getattr(mx, "set_cache_limit", None)
+    if callable(set_cache_limit):
+        set_cache_limit(limit_bytes)
+        return
+    metal = getattr(mx, "metal", None)
+    if metal is None:
+        return
+    metal_set_cache_limit = getattr(metal, "set_cache_limit", None)
+    if callable(metal_set_cache_limit):
+        metal_set_cache_limit(limit_bytes)
+
+
+def _load_model_compat(model_path: str):
+    from pathlib import Path
+
+    _set_mx_cache_limit(4 * 1024 * 1024 * 1024)
+    resolved_model_path = Path(model_path)
+    if not resolved_model_path.exists():
+        resolved_model_path = _vw.download_model(model_path)
+    model_value, model_config = _vw.load_model(resolved_model_path)
+    tokenizer = voxmlx._load_tokenizer(resolved_model_path)
+    return model_value, tokenizer, model_config
+
+
 def load_voxtral():
     global model, sp, config
-    model, sp, config = voxmlx.load_model(MODEL_ID)
+    model, sp, config = _load_model_compat(MODEL_ID)
 
     log("[server] Warming up model (1s silent audio, streaming pipeline)...", force=True)
     try:

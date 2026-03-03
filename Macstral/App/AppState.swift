@@ -19,6 +19,13 @@ enum DictationStatus: Equatable {
     case inserting
 }
 
+// MARK: - DictationMode
+
+enum DictationMode: String, CaseIterable {
+    case normal = "normal"
+    case streaming = "streaming"
+}
+
 // MARK: - SetupStep
 
 enum SetupStep: Equatable {
@@ -49,8 +56,16 @@ final class AppState {
     // MARK: Dictation
 
     var dictationStatus: DictationStatus = .idle
+    var audioLevel: Float = 0.0
     var liveTranscript: String = ""
     var finalTranscript: String = ""
+
+    // MARK: Dictation Mode
+
+    var dictationMode: DictationMode {
+        get { DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "dictationMode") }
+    }
 
     // MARK: Permissions & Onboarding
 
