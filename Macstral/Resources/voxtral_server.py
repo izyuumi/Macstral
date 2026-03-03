@@ -265,6 +265,7 @@ async def handle_client(websocket):
     pre_allocated_session = None
     first_chunk_received_at = None
     first_delta_sent = False
+    first_feed_done = False
     audio_buffer = np.array([], dtype=np.float32)
 
     async for message in websocket:
@@ -283,11 +284,12 @@ async def handle_client(websocket):
 
             # Use a smaller threshold for the first batch (fast first delta),
             # then switch to the larger steady-state threshold.
-            threshold = FIRST_BATCH_THRESHOLD if not first_delta_sent else AUDIO_BATCH_THRESHOLD
+            threshold = FIRST_BATCH_THRESHOLD if not first_feed_done else AUDIO_BATCH_THRESHOLD
             if len(audio_buffer) >= threshold:
                 audio_buffer, first_delta_sent = await _feed_buffered_audio(
                     session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
                 )
+                first_feed_done = True
 
             if getattr(session, "eos_text", None) is not None:
                 log(f"[server] EOS detected during feed: \"{session.eos_text[:80]}\"")
@@ -300,6 +302,7 @@ async def handle_client(websocket):
                 audio_buffer = np.array([], dtype=np.float32)
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
 
         elif isinstance(message, str):
             cmd = message.strip().lower()
@@ -313,6 +316,7 @@ async def handle_client(websocket):
                     session = await asyncio.to_thread(_create_session)
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
 
             elif cmd == "commit":
@@ -335,6 +339,7 @@ async def handle_client(websocket):
                 session = None
                 first_chunk_received_at = None
                 first_delta_sent = False
+                first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
                 # Pre-allocate next session off the critical path.
                 pre_allocated_session = await asyncio.to_thread(_create_session)
