@@ -293,6 +293,7 @@ async def handle_client(websocket):
     log("[server] Client connected", force=True)
     session = None
     pre_allocated_session = None
+    accumulated_eos_text = ""
     first_chunk_received_at = None
     first_delta_sent = False
     first_feed_done = False
@@ -333,6 +334,10 @@ async def handle_client(websocket):
                 await websocket.send(
                     json.dumps({"type": "delta", "text": eos_text, "is_incremental": False})
                 )
+                # Accumulate EOS text so it can be prepended to the final "done"
+                # response when commit arrives (session.full_text only covers the
+                # new session, so we'd silently drop any pre-rollover speech otherwise).
+                accumulated_eos_text += eos_text
                 # Start a fresh session so subsequent audio is still transcribed.
                 if pre_allocated_session is not None:
                     session = pre_allocated_session
@@ -362,7 +367,8 @@ async def handle_client(websocket):
             elif cmd == "commit":
                 if session is None:
                     log("[server] WARNING: commit received but session is None — sending empty done", force=True)
-                    await websocket.send(json.dumps({"type": "done", "text": ""}))
+                    await websocket.send(json.dumps({"type": "done", "text": accumulated_eos_text}))
+                    accumulated_eos_text = ""
                     continue
                 # Flush any remaining buffered audio before finalizing.
                 if len(audio_buffer) > 0:
@@ -375,11 +381,15 @@ async def handle_client(websocket):
                     await asyncio.to_thread(session.finalize)
                 except Exception as exc:
                     log(f"[server] ERROR in finalize(): {exc}", force=True)
-                    await websocket.send(json.dumps({"type": "done", "text": session.full_text or ""}))
+                    await websocket.send(json.dumps({"type": "done", "text": accumulated_eos_text + (session.full_text or "")}))
+                    accumulated_eos_text = ""
                     session = None
                     continue
                 t1 = time.perf_counter()
-                final_text = session.full_text
+                # Prepend any EOS-detected text from earlier session rollovers so the
+                # full dictation is preserved in the final response.
+                final_text = accumulated_eos_text + (session.full_text or "")
+                accumulated_eos_text = ""
                 log(f"[server] finalize() took {t1-t0:.3f}s, result: \"{final_text[:80]}\"", force=True)
                 await websocket.send(
                     json.dumps({"type": "done", "text": final_text, "finalize_ms": (t1 - t0) * 1000.0})
