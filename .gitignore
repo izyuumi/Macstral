@@ -24,3 +24,5 @@ xcuserdata/
 *.xcuserstate
 *.xccheckout
 *.moved-aside
+__pycache__/
+*.pyc
