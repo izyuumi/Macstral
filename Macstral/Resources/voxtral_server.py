@@ -261,16 +261,21 @@ AUDIO_BATCH_THRESHOLD = 8_000   # ~500ms at 16 kHz — steady-state
 
 
 async def _feed_buffered_audio(session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket):
-    """Feed accumulated audio buffer to the model and send deltas."""
+    """Feed accumulated audio buffer to the model and send deltas.
+
+    Returns (audio_buffer, first_delta_sent, ok).  ``ok`` is False when
+    feed_audio raises an exception; the caller should treat the session as
+    broken and set it to None.
+    """
     if len(audio_buffer) == 0:
-        return audio_buffer, first_delta_sent
+        return audio_buffer, first_delta_sent, True
     t0 = time.perf_counter()
     try:
         tokens = await asyncio.to_thread(session.feed_audio, audio_buffer)
     except Exception as exc:
         log(f"[server] ERROR in feed_audio ({len(audio_buffer)} samples): {exc}", force=True)
         await websocket.send(json.dumps({"type": "error", "text": f"feed_audio failed: {exc}"}))
-        return np.array([], dtype=np.float32), first_delta_sent
+        return np.array([], dtype=np.float32), first_delta_sent, False
     t1 = time.perf_counter()
 
     if tokens:
@@ -286,7 +291,7 @@ async def _feed_buffered_audio(session, audio_buffer, first_chunk_received_at, f
             first_delta_sent = True
         await websocket.send(json.dumps(delta_payload))
 
-    return np.array([], dtype=np.float32), first_delta_sent
+    return np.array([], dtype=np.float32), first_delta_sent, True
 
 
 async def handle_client(websocket):
@@ -317,9 +322,12 @@ async def handle_client(websocket):
             # then switch to the larger steady-state threshold.
             threshold = FIRST_BATCH_THRESHOLD if not first_feed_done else AUDIO_BATCH_THRESHOLD
             if len(audio_buffer) >= threshold:
-                audio_buffer, first_delta_sent = await _feed_buffered_audio(
+                audio_buffer, first_delta_sent, feed_ok = await _feed_buffered_audio(
                     session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
                 )
+                if not feed_ok:
+                    session = None
+                    continue
                 first_feed_done = True
 
             if getattr(session, "eos_text", None) is not None:
@@ -363,6 +371,7 @@ async def handle_client(websocket):
                 first_delta_sent = False
                 first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
+                accumulated_eos_text = ""
 
             elif cmd == "commit":
                 if session is None:
@@ -372,9 +381,12 @@ async def handle_client(websocket):
                     continue
                 # Flush any remaining buffered audio before finalizing.
                 if len(audio_buffer) > 0:
-                    audio_buffer, first_delta_sent = await _feed_buffered_audio(
+                    audio_buffer, first_delta_sent, feed_ok = await _feed_buffered_audio(
                         session, audio_buffer, first_chunk_received_at, first_delta_sent, websocket
                     )
+                    if not feed_ok:
+                        session = None
+                        continue
                 log("[server] Received commit, finalizing session...", force=True)
                 t0 = time.perf_counter()
                 try:

@@ -267,10 +267,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if self.appState.dictationStatus == .listening {
                 // Unexpected "done" while still recording.
                 // Treat it as a transcript update — finalization still happens on commit.
+                // Note: liveTranscript is already updated unconditionally above.
                 print("[Dictation] onTranscriptDone during .listening (EOS mid-stream): \"\(trimmed.prefix(80))\"")
-                if self.appState.dictationMode == .streaming {
-                    self.appState.liveTranscript = self.latestTranscript
-                }
             } else {
                 print("[Dictation] onTranscriptDone ignored: status is \(self.appState.dictationStatus), not .processing")
             }
