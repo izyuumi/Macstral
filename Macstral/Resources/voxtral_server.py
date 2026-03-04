@@ -265,7 +265,12 @@ async def _feed_buffered_audio(session, audio_buffer, first_chunk_received_at, f
     if len(audio_buffer) == 0:
         return audio_buffer, first_delta_sent
     t0 = time.perf_counter()
-    tokens = await asyncio.to_thread(session.feed_audio, audio_buffer)
+    try:
+        tokens = await asyncio.to_thread(session.feed_audio, audio_buffer)
+    except Exception as exc:
+        log(f"[server] ERROR in feed_audio ({len(audio_buffer)} samples): {exc}", force=True)
+        await websocket.send(json.dumps({"type": "error", "text": f"feed_audio failed: {exc}"}))
+        return np.array([], dtype=np.float32), first_delta_sent
     t1 = time.perf_counter()
 
     if tokens:
@@ -317,13 +322,23 @@ async def handle_client(websocket):
                 first_feed_done = True
 
             if getattr(session, "eos_text", None) is not None:
-                log(f"[server] EOS detected during feed: \"{session.eos_text[:80]}\"")
+                eos_text = session.eos_text
+                log(f"[server] EOS detected during feed: \"{eos_text[:80]}\"", force=True)
+                # Send the EOS text as a delta (not done) so the client can display it
+                # while continuing the session. The client will send "commit" when the
+                # user releases the hotkey, which triggers the actual "done" response.
+                # Sending "done" here would desync: the client ignores it (status is
+                # .listening) and the subsequent "commit" is silently dropped because
+                # session would be None.
                 await websocket.send(
-                    json.dumps({"type": "done", "text": session.eos_text})
+                    json.dumps({"type": "delta", "text": eos_text, "is_incremental": False})
                 )
-                # Pre-allocate next session off the critical path.
-                pre_allocated_session = await asyncio.to_thread(_create_session)
-                session = None
+                # Start a fresh session so subsequent audio is still transcribed.
+                if pre_allocated_session is not None:
+                    session = pre_allocated_session
+                    pre_allocated_session = None
+                else:
+                    session = await asyncio.to_thread(_create_session)
                 audio_buffer = np.array([], dtype=np.float32)
                 first_chunk_received_at = None
                 first_delta_sent = False
@@ -346,6 +361,8 @@ async def handle_client(websocket):
 
             elif cmd == "commit":
                 if session is None:
+                    log("[server] WARNING: commit received but session is None — sending empty done", force=True)
+                    await websocket.send(json.dumps({"type": "done", "text": ""}))
                     continue
                 # Flush any remaining buffered audio before finalizing.
                 if len(audio_buffer) > 0:
@@ -354,7 +371,13 @@ async def handle_client(websocket):
                     )
                 log("[server] Received commit, finalizing session...", force=True)
                 t0 = time.perf_counter()
-                await asyncio.to_thread(session.finalize)
+                try:
+                    await asyncio.to_thread(session.finalize)
+                except Exception as exc:
+                    log(f"[server] ERROR in finalize(): {exc}", force=True)
+                    await websocket.send(json.dumps({"type": "done", "text": session.full_text or ""}))
+                    session = None
+                    continue
                 t1 = time.perf_counter()
                 final_text = session.full_text
                 log(f"[server] finalize() took {t1-t0:.3f}s, result: \"{final_text[:80]}\"", force=True)

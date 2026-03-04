@@ -264,6 +264,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("[Dictation] WARNING: finalText is empty, nothing to insert.")
                 }
                 self.finishDictation()
+            } else if self.appState.dictationStatus == .listening {
+                // Server sent "done" while still recording (e.g. EOS detection during streaming).
+                // Treat it as a transcript update — the real finalization happens on commit.
+                print("[Dictation] onTranscriptDone during .listening (EOS mid-stream): \"\(trimmed.prefix(80))\"")
+                if self.appState.dictationMode == .streaming {
+                    self.appState.liveTranscript = self.latestTranscript
+                }
             } else {
                 print("[Dictation] onTranscriptDone ignored: status is \(self.appState.dictationStatus), not .processing")
             }
@@ -521,6 +528,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !requestCommit(force: true) {
                 print("[Dictation] stopDictation: requestCommit failed, finishing dictation")
                 finishDictation()
+            } else {
+                // Safety timeout: if the server never responds, don't leave the user stuck.
+                stopCommitTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 5_000_000_000)
+                    guard let self, self.appState.dictationStatus == .processing else { return }
+                    print("[Dictation] WARNING: processing timeout — server did not respond within 5s")
+                    self.finishDictation()
+                }
             }
         }
     }
