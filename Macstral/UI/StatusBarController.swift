@@ -20,7 +20,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// Called when the user clicks "Clear History".
     var onClearHistoryRequested: (() -> Void)?
 
-    /// Called when the user clicks "Save Transcript\u2026".
+    /// Called when the user clicks "Save Transcript…".
     var onSaveTranscriptRequested: (() -> Void)?
 
     override init() {
@@ -58,7 +58,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // Preferences item
         let prefsItem = NSMenuItem(
-            title: "Preferences\u2026",
+            title: "Preferences…",
             action: #selector(openPreferences),
             keyEquivalent: ","
         )
@@ -114,7 +114,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         } else {
             for (index, text) in entries.enumerated() {
                 let label = text.count > 80
-                    ? String(text.prefix(80)) + "\u2026"
+                    ? String(text.prefix(80)) + "…"
                     : text
                 let item = NSMenuItem(
                     title: "\(index + 1). \(label)",
@@ -129,7 +129,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             menu.addItem(.separator())
 
             let saveItem = NSMenuItem(
-                title: "Save Transcript\u2026",
+                title: "Save Transcript…",
                 action: #selector(saveTranscript),
                 keyEquivalent: ""
             )
