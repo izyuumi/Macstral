@@ -60,6 +60,26 @@ final class AppState {
     var liveTranscript: String = ""
     var finalTranscript: String = ""
 
+    // MARK: Transcript History
+
+    /// Session-scoped transcript history, newest entry first. Capped at 50.
+    var transcriptHistory: [String] = []
+    private let maxHistoryCount = 50
+
+    /// Prepend a non-empty transcript to history, trimming to the cap.
+    func appendToHistory(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        transcriptHistory.insert(trimmed, at: 0)
+        if transcriptHistory.count > maxHistoryCount {
+            transcriptHistory = Array(transcriptHistory.prefix(maxHistoryCount))
+        }
+    }
+
+    func clearHistory() {
+        transcriptHistory = []
+    }
+
     // MARK: Dictation Mode
 
     var dictationMode: DictationMode {

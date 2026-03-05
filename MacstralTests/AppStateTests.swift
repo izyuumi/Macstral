@@ -44,4 +44,56 @@ final class AppStateTests: XCTestCase {
         state.setupStep = .error("something went wrong")
         XCTAssertFalse(state.isVoxtralReady)
     }
+
+    // MARK: - Transcript History
+
+    func testInitialHistoryIsEmpty() {
+        let state = AppState()
+        XCTAssertTrue(state.transcriptHistory.isEmpty)
+    }
+
+    func testAppendToHistoryAddsEntry() {
+        let state = AppState()
+        state.appendToHistory("Hello world")
+        XCTAssertEqual(state.transcriptHistory, ["Hello world"])
+    }
+
+    func testAppendToHistoryNewestFirst() {
+        let state = AppState()
+        state.appendToHistory("First")
+        state.appendToHistory("Second")
+        XCTAssertEqual(state.transcriptHistory.first, "Second")
+        XCTAssertEqual(state.transcriptHistory.last, "First")
+    }
+
+    func testAppendToHistoryIgnoresEmpty() {
+        let state = AppState()
+        state.appendToHistory("")
+        state.appendToHistory("   ")
+        XCTAssertTrue(state.transcriptHistory.isEmpty)
+    }
+
+    func testAppendToHistoryTrimsWhitespace() {
+        let state = AppState()
+        state.appendToHistory("  hello  ")
+        XCTAssertEqual(state.transcriptHistory.first, "hello")
+    }
+
+    func testAppendToHistoryCapsAt50() {
+        let state = AppState()
+        for i in 1...55 {
+            state.appendToHistory("Entry \(i)")
+        }
+        XCTAssertEqual(state.transcriptHistory.count, 50)
+        // Newest entry (55) should be first.
+        XCTAssertEqual(state.transcriptHistory.first, "Entry 55")
+    }
+
+    func testClearHistoryEmptiesArray() {
+        let state = AppState()
+        state.appendToHistory("One")
+        state.appendToHistory("Two")
+        state.clearHistory()
+        XCTAssertTrue(state.transcriptHistory.isEmpty)
+    }
 }
