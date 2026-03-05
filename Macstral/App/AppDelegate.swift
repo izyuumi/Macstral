@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var onboardingWindow: OnboardingWindow?
     private var preferencesWindow: PreferencesWindow?
     private var setupTask: Task<Void, Never>?
+    private var permissionPollingTimer: Timer?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
     private var sessionBufferedAudioBytes = 0
@@ -88,6 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start Voxtral setup immediately during onboarding
         startVoxtralSetup()
 
+        // Poll for permission changes (e.g. Accessibility granted in System Settings)
+        // while the onboarding window is open, since macOS provides no callback for it.
+        permissionPollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.checkPermissions()
+        }
+
         onboardingWindow = OnboardingWindow(
             appState: appState,
             onPermissionStateChanged: { [weak self] in
@@ -95,6 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onComplete: { [weak self] in
                 guard let self else { return }
+                self.permissionPollingTimer?.invalidate()
+                self.permissionPollingTimer = nil
                 self.appState.isOnboardingNeeded = false
                 self.onboardingWindow = nil
             }
@@ -252,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appState.finalTranscript = finalText
+                self.appState.appendToHistory(finalText)
                 if !finalText.isEmpty {
                     if self.debugTranscriptionLogging {
                         print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
@@ -378,6 +389,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
             self?.pasteLastTranscription()
+        }
+        statusBarController?.historyProvider = { [weak self] in
+            self?.appState.transcriptHistory ?? []
+        }
+        statusBarController?.onHistoryItemCopyRequested = { text in
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
+        statusBarController?.onClearHistoryRequested = { [weak self] in
+            self?.appState.clearHistory()
+        }
+        statusBarController?.onSaveTranscriptRequested = { [weak self] in
+            self?.saveTranscript()
+        }
+    }
+
+    private func saveTranscript() {
+        let history = appState.transcriptHistory
+        guard !history.isEmpty else { return }
+        let panel = NSSavePanel()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "macstral-transcript-\(formatter.string(from: Date())).txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let content = history.reversed().joined(separator: "\n\n")
+            try? content.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 
