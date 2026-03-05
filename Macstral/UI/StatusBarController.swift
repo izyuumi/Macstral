@@ -5,6 +5,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var statusItem: NSStatusItem
     private var statusMenuItem: NSMenuItem
     private var historyMenuItem: NSMenuItem
+    private var saveTranscriptTopMenuItem: NSMenuItem
 
     // MARK: - Callbacks
 
@@ -27,6 +28,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusMenuItem = NSMenuItem()
         historyMenuItem = NSMenuItem(title: "History", action: nil, keyEquivalent: "")
+        saveTranscriptTopMenuItem = NSMenuItem(
+            title: "Save Transcript…",
+            action: #selector(saveTranscript),
+            keyEquivalent: "s"
+        )
 
         super.init()
 
@@ -80,6 +86,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         historyMenuItem.submenu = historySubmenu
         menu.addItem(historyMenuItem)
 
+        // Top-level Save Transcript — enabled/disabled dynamically in menuNeedsUpdate
+        saveTranscriptTopMenuItem.target = self
+        saveTranscriptTopMenuItem.isEnabled = false
+        menu.addItem(saveTranscriptTopMenuItem)
+
         menu.addItem(.separator())
 
         // Quit item
@@ -97,9 +108,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     // MARK: - NSMenuDelegate
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        // Only rebuild when the history submenu is opening.
-        guard menu === historyMenuItem.submenu else { return }
-        rebuildHistorySubmenu(menu)
+        if menu === historyMenuItem.submenu {
+            rebuildHistorySubmenu(menu)
+        } else {
+            // Main menu opened — update top-level Save Transcript enabled state.
+            let hasHistory = !(historyProvider?() ?? []).isEmpty
+            saveTranscriptTopMenuItem.isEnabled = hasHistory
+        }
     }
 
     private func rebuildHistorySubmenu(_ menu: NSMenu) {
@@ -170,6 +185,18 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     // MARK: - Public Interface
+
+    /// Temporarily replaces the status line text (e.g. "Saved ✓") then restores after a delay.
+    func showBriefStatus(_ message: String, duration: TimeInterval = 2.0) {
+        let original = statusMenuItem.title
+        statusMenuItem.title = message
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+            // Only restore if nothing else has changed the title in the meantime.
+            if self?.statusMenuItem.title == message {
+                self?.statusMenuItem.title = original
+            }
+        }
+    }
 
     func updateStatus(_ status: BackendStatus) {
         let label: String

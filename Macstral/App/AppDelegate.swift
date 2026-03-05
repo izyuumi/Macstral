@@ -405,10 +405,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         formatter.dateFormat = "yyyy-MM-dd"
         panel.nameFieldStringValue = "macstral-transcript-\(formatter.string(from: Date())).txt"
         panel.allowedContentTypes = [.plainText]
-        panel.begin { response in
+        panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
             let content = history.reversed().joined(separator: "\n\n")
-            try? content.write(to: url, atomically: true, encoding: .utf8)
+            do {
+                try content.write(to: url, atomically: true, encoding: .utf8)
+                DispatchQueue.main.async {
+                    self?.statusBarController?.showBriefStatus(
+                        "Saved: \(url.lastPathComponent)"
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Could not save transcript"
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
         }
     }
 
