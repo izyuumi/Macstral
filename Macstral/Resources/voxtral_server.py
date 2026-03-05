@@ -244,7 +244,12 @@ sp = None
 config = None
 SAMPLE_RATE = 16_000
 
-MODEL_ID = "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
+# Model ID can be overridden by the Swift app via MACSTRAL_MODEL_ID env var.
+# Defaults to the 4-bit quantized model that is bundled with the initial download.
+MODEL_ID = os.environ.get(
+    "MACSTRAL_MODEL_ID",
+    "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
+)
 # If MACSTRAL_MODEL_DIR is set by the Swift launcher, use it as the Hugging Face
 # cache directory so model files are stored inside Application Support rather than
 # the default ~/.cache/huggingface location, keeping the app self-contained.
