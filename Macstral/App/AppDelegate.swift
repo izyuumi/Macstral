@@ -397,7 +397,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await backendManager.restartForModelSwitch()
             // Re-connect WebSocket to the new server port.
             if let port = backendManager.serverPort {
-                webSocketClient.connect(port: port)
+                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+                webSocketClient.connect(to: serverURL)
             }
             appState.setupStep = .ready
         }
