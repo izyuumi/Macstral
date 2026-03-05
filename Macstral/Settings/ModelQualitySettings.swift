@@ -51,16 +51,29 @@ enum ModelQuality: String, CaseIterable, Identifiable {
 // MARK: - ModelQualitySettings
 
 enum ModelQualitySettings {
-    private static let key = "modelQuality"
+    static let key = "modelQuality"
+    static let defaultQuality: ModelQuality = .fast
+
+    // MARK: Convenience accessors (use UserDefaults.standard)
 
     static var current: ModelQuality {
-        get {
-            guard let raw = UserDefaults.standard.string(forKey: key),
-                  let quality = ModelQuality(rawValue: raw) else { return .fast }
-            return quality
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: key)
-        }
+        get { load(from: .standard) }
+        set { save(newValue, to: .standard) }
+    }
+
+    // MARK: Injectable accessors (for unit testing)
+
+    static func load(from defaults: UserDefaults = .standard) -> ModelQuality {
+        guard let raw = defaults.string(forKey: key),
+              let quality = ModelQuality(rawValue: raw) else { return defaultQuality }
+        return quality
+    }
+
+    static func save(_ quality: ModelQuality, to defaults: UserDefaults = .standard) {
+        defaults.set(quality.rawValue, forKey: key)
+    }
+
+    static func reset(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key)
     }
 }
