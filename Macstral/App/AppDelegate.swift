@@ -314,9 +314,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var audioChunkCount = 0
-    /// Rolling window of recent RMS levels for smoothed waveform display.
-    private var audioLevelHistory: [Float] = []
-    private let audioLevelHistoryCapacity = 10
     private func handleAudioChunk(_ data: Data) {
         guard appState.dictationStatus == .listening || appState.dictationStatus == .processing else { return }
 
@@ -326,11 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rms = sqrt(sumOfSquares / Double(max(samples.count, 1)))
         let db = 20 * log10(max(rms, 1) / 32768.0)
         let normalized = Float(max(0, min(1, (db + 50) / 50)))
-        audioLevelHistory.append(normalized)
-        if audioLevelHistory.count > audioLevelHistoryCapacity {
-            audioLevelHistory.removeFirst()
-        }
-        appState.audioLevel = audioLevelHistory.reduce(0, +) / Float(audioLevelHistory.count)
+        appState.audioLevel = normalized
 
         if appState.dictationMode == .normal {
             // Normal mode: always buffer locally — audio is sent in bulk when the user stops.
@@ -557,7 +550,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isAudioCaptureActive = false
         }
         appState.audioLevel = 0
-        audioLevelHistory.removeAll(keepingCapacity: true)
         appState.dictationStatus = .idle
         webSocketClient.endSession()
         hudPanel?.hide()

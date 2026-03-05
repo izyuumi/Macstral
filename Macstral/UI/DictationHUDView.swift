@@ -4,24 +4,9 @@ struct DictationHUDView: View {
 
     var appState: AppState
 
-    // Bar envelope shape: edges shorter, centre tallest.
-    private let barScales: [Float] = [0.45, 0.75, 1.0, 0.75, 0.45]
+    private let barScales: [Float] = [0.5, 0.75, 1.0, 0.75, 0.5]
     private let minBarHeight: CGFloat = 4
     private let maxBarHeight: CGFloat = 28
-
-    /// Drives idle breathing animation (0 → 1, repeating).
-    @State private var breathPhase: Double = 0
-
-    /// Blended audio level: real RMS when speaking, gentle sine when idle.
-    private var effectiveLevel: Float {
-        let live = appState.audioLevel
-        // Threshold below which we blend into idle breathing
-        if live > 0.12 { return live }
-        let breathLevel = Float(0.04 + 0.07 * breathPhase)
-        // Cross-fade: as live level rises toward threshold, blend out the breath
-        let blend = live / 0.12
-        return breathLevel * (1 - blend) + live * blend
-    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -44,27 +29,18 @@ struct DictationHUDView: View {
                     // Waveform bars
                     HStack(spacing: 3) {
                         ForEach(0..<5, id: \.self) { index in
-                            let level = CGFloat(effectiveLevel * barScales[index])
+                            let level = CGFloat(appState.audioLevel * barScales[index])
                             let barHeight = minBarHeight + (maxBarHeight - minBarHeight) * level
                             Capsule()
                                 .fill(Color.white)
                                 .frame(width: 3, height: barHeight)
-                                .animation(.spring(response: 0.2, dampingFraction: 0.65),
-                                           value: barHeight)
+                                .animation(.spring(duration: 0.15), value: appState.audioLevel)
                         }
                     }
 
                     Text("Listening...")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
-                }
-                .onAppear {
-                    withAnimation(
-                        .easeInOut(duration: 1.4)
-                        .repeatForever(autoreverses: true)
-                    ) {
-                        breathPhase = 1.0
-                    }
                 }
             }
 
