@@ -64,16 +64,29 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable {
 // MARK: - LanguageSettings
 
 enum LanguageSettings {
-    private static let key = "preferredLanguage"
+    static let key = "preferredLanguage"
+    static let defaultLanguage: TranscriptionLanguage = .auto
+
+    // MARK: Convenience accessors (use UserDefaults.standard)
 
     static var current: TranscriptionLanguage {
-        get {
-            guard let raw = UserDefaults.standard.string(forKey: key),
-                  let lang = TranscriptionLanguage(rawValue: raw) else { return .auto }
-            return lang
-        }
-        set {
-            UserDefaults.standard.set(newValue.rawValue, forKey: key)
-        }
+        get { load(from: .standard) }
+        set { save(newValue, to: .standard) }
+    }
+
+    // MARK: Injectable accessors (for unit testing)
+
+    static func load(from defaults: UserDefaults = .standard) -> TranscriptionLanguage {
+        guard let raw = defaults.string(forKey: key),
+              let lang = TranscriptionLanguage(rawValue: raw) else { return defaultLanguage }
+        return lang
+    }
+
+    static func save(_ language: TranscriptionLanguage, to defaults: UserDefaults = .standard) {
+        defaults.set(language.rawValue, forKey: key)
+    }
+
+    static func reset(in defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: key)
     }
 }
