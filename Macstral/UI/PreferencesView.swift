@@ -240,7 +240,6 @@ struct PreferencesView: View {
                         .font(.caption)
                 }
             }
-        }
 
             Section {
                 Toggle(isOn: $autoPunctuationEnabled) {
