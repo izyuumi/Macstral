@@ -529,9 +529,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 // Safety timeout: if the server never responds, don't leave the user stuck.
                 stopCommitTask = Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 5_000_000_000)
-                    guard let self, self.appState.dictationStatus == .processing else { return }
-                    print("[Dictation] WARNING: processing timeout — server did not respond within 5s")
+                    do {
+                        try await Task.sleep(nanoseconds: 15_000_000_000)
+                    } catch {
+                        print("[Dictation] stopDictation (streaming): stop-commit watchdog canceled after normal completion")
+                        return
+                    }
+                    guard let self else { return }
+                    guard self.appState.dictationStatus == .processing else {
+                        print("[Dictation] stopDictation (streaming): stop-commit completed normally before watchdog timeout")
+                        return
+                    }
+                    print("[Dictation] WARNING: genuine stop-commit timeout — server did not respond within 15s")
                     self.finishDictation()
                 }
             }
