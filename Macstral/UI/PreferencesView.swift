@@ -154,6 +154,7 @@ struct PreferencesView: View {
     @State private var key: Key
     @State private var modifiers: NSEvent.ModifierFlags
     @State private var dictationMode: DictationMode
+    @State private var language: TranscriptionLanguage
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
 
     init(onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
@@ -161,6 +162,7 @@ struct PreferencesView: View {
         _key = State(initialValue: k)
         _modifiers = State(initialValue: m)
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
+        _language = State(initialValue: LanguageSettings.current)
         self.onHotkeyChanged = onHotkeyChanged
     }
 
@@ -185,10 +187,36 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
             }
+
+            Section {
+                LabeledContent("Language") {
+                    Picker("", selection: $language) {
+                        ForEach(TranscriptionLanguage.allCases) { lang in
+                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 260)
+                }
+            } footer: {
+                if language.isBeta {
+                    Text("\(language.displayName) is in beta — accuracy may vary. Auto-detect is recommended for most users.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    Text("Sets the transcription language. Auto-detect works well for single-language use; pick a specific language if you speak with an accent or mix languages.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            }
         }
         .formStyle(.grouped)
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
+        }
+        .onChange(of: language) { _, newLang in
+            LanguageSettings.current = newLang
         }
         .onChange(of: key) { _, newKey in
             onHotkeyChanged(newKey, modifiers)

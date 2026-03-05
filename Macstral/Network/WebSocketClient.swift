@@ -100,11 +100,26 @@ class WebSocketClient: NSObject {
     /// as ready to accept audio. No round-trip wait is needed because
     /// WebSocket messages are ordered — the server will process start_session
     /// before any subsequent audio chunks.
-    func startSession() {
+    func startSession(language: String? = nil) {
         guard isConnected, let task = webSocketTask else { return }
         cumulativeDeltaText = ""
         isAcceptingAudio = true
-        task.send(.string("start_session")) { [weak self] error in
+
+        // Send a JSON start_session with optional language hint.
+        // The server falls back to auto-detect when language is nil or "auto".
+        var payload: [String: String] = ["cmd": "start_session"]
+        if let lang = language, lang != "auto" {
+            payload["language"] = lang
+        }
+        let message: String
+        if let data = try? JSONSerialization.data(withJSONObject: payload),
+           let json = String(data: data, encoding: .utf8) {
+            message = json
+        } else {
+            message = "start_session"  // safe fallback
+        }
+
+        task.send(.string(message)) { [weak self] error in
             if let error {
                 Task { @MainActor [weak self] in
                     self?.onError?(error)
