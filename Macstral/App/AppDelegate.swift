@@ -264,6 +264,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("[Dictation] WARNING: finalText is empty, nothing to insert.")
                 }
                 self.finishDictation()
+            } else if self.appState.dictationStatus == .listening {
+                // Unexpected "done" while still recording.
+                // Treat it as a transcript update — finalization still happens on commit.
+                // Note: liveTranscript is already updated unconditionally above.
+                print("[Dictation] onTranscriptDone during .listening (EOS mid-stream): \"\(trimmed.prefix(80))\"")
             } else {
                 print("[Dictation] onTranscriptDone ignored: status is \(self.appState.dictationStatus), not .processing")
             }
@@ -521,6 +526,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if !requestCommit(force: true) {
                 print("[Dictation] stopDictation: requestCommit failed, finishing dictation")
                 finishDictation()
+            } else {
+                // Safety timeout: if the server never responds, don't leave the user stuck.
+                stopCommitTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(nanoseconds: 15_000_000_000)
+                    } catch {
+                        print("[Dictation] stopDictation (streaming): stop-commit watchdog canceled after normal completion")
+                        return
+                    }
+                    guard let self else { return }
+                    guard self.appState.dictationStatus == .processing else {
+                        print("[Dictation] stopDictation (streaming): stop-commit completed normally before watchdog timeout")
+                        return
+                    }
+                    print("[Dictation] WARNING: genuine stop-commit timeout — server did not respond within 15s")
+                    self.finishDictation()
+                }
             }
         }
     }
