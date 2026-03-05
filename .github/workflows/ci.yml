@@ -4,14 +4,27 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
 
 jobs:
-  build:
+  build-and-test:
+    name: Build & Test
     runs-on: macos-15
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Python syntax (voxtral_server.py)
+        run: python -m py_compile Macstral/Resources/voxtral_server.py && echo "✅ voxtral_server.py syntax OK"
+
+      - name: Build (unsigned)
         run: |
           xcodebuild build \
             -project Macstral.xcodeproj \
@@ -19,12 +32,8 @@ jobs:
             -destination "generic/platform=macOS" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
-
-  test:
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v4
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet
 
       - name: Test
         run: |
@@ -34,4 +43,5 @@ jobs:
             -destination "platform=macOS,arch=arm64" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            -quiet
