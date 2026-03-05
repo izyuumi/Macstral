@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -252,6 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appState.finalTranscript = finalText
+                self.appState.appendToHistory(finalText)
                 if !finalText.isEmpty {
                     if self.debugTranscriptionLogging {
                         print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
@@ -378,6 +380,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
             self?.pasteLastTranscription()
+        }
+        statusBarController?.historyProvider = { [weak self] in
+            self?.appState.transcriptHistory ?? []
+        }
+        statusBarController?.onHistoryItemCopyRequested = { text in
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
+        statusBarController?.onClearHistoryRequested = { [weak self] in
+            self?.appState.clearHistory()
+        }
+        statusBarController?.onSaveTranscriptRequested = { [weak self] in
+            self?.saveTranscript()
+        }
+    }
+
+    private func saveTranscript() {
+        let history = appState.transcriptHistory
+        guard !history.isEmpty else { return }
+        let panel = NSSavePanel()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "macstral-transcript-\(formatter.string(from: Date())).txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let content = history.reversed().joined(separator: "\n\n")
+            try? content.write(to: url, atomically: true, encoding: .utf8)
         }
     }
 
