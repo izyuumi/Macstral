@@ -176,6 +176,63 @@ def _patched_load_converted(model_path):
 # Apply the patch so converted-weight loading handles both formats.
 _vw._load_converted = _patched_load_converted
 
+
+# ---------------------------------------------------------------------------
+# Language-forcing patch for _build_prompt_tokens
+# ---------------------------------------------------------------------------
+# The research brief (voxtral-multilingual-2026-03.md) confirms that voxmlx
+# has no native language parameter.  We patch _build_prompt_tokens to prepend
+# an optional language token before the streaming pad tokens.
+#
+# If the token is not found in the vocab (or language is None / "auto"), the
+# patch falls back silently to auto-detect — no behaviour change for existing
+# users.
+# ---------------------------------------------------------------------------
+
+import voxmlx as _voxmlx_for_patch  # noqa: E402 — needed to access the function
+
+_LANGUAGE_TOKEN_MAP = {
+    "en": "[EN]", "ja": "[JA]", "fr": "[FR]", "de": "[DE]",
+    "es": "[ES]", "it": "[IT]", "pt": "[PT]", "zh": "[ZH]",
+}
+
+_verified_lang_tokens: dict = {}  # populated at startup after sp is loaded
+
+
+def _verify_language_tokens(tokenizer):
+    """Probe the tokenizer for language special tokens; populate _verified_lang_tokens."""
+    global _verified_lang_tokens
+    for code, token_name in _LANGUAGE_TOKEN_MAP.items():
+        try:
+            tok_id = tokenizer.get_special_token(token_name)
+            _verified_lang_tokens[code] = tok_id
+            log(f"[lang] {token_name} → id={tok_id}", force=True)
+        except Exception as exc:
+            log(f"[lang] {token_name} not found in vocab: {exc}", force=True)
+    log(f"[lang] {len(_verified_lang_tokens)}/{len(_LANGUAGE_TOKEN_MAP)} language tokens verified", force=True)
+
+
+_original_build_prompt_tokens = _voxmlx_for_patch._build_prompt_tokens
+
+
+def _patched_build_prompt_tokens(sp, n_left_pad_tokens=32, num_delay_tokens=6, language=None):
+    streaming_pad = sp.get_special_token("[STREAMING_PAD]")
+    tokens = [sp.bos_id]
+    effective_left_pads = n_left_pad_tokens
+
+    if language and language != "auto":
+        lang_id = _verified_lang_tokens.get(language)
+        if lang_id is not None:
+            tokens.append(lang_id)
+            effective_left_pads = max(0, n_left_pad_tokens - 1)  # one fewer pad, same total length
+            log(f"[lang] Injected language token for '{language}' (id={lang_id})")
+
+    tokens += [streaming_pad] * (effective_left_pads + num_delay_tokens)
+    return tokens, num_delay_tokens
+
+
+_voxmlx_for_patch._build_prompt_tokens = _patched_build_prompt_tokens
+
 import voxmlx  # noqa: E402
 from voxmlx.server import StreamingSession  # noqa: E402
 
@@ -233,6 +290,7 @@ def load_voxtral():
     global model, sp, config
     model, sp, config = _load_model_compat(MODEL_ID)
 
+    _verify_language_tokens(sp)
     log("[server] Warming up model (1s silent audio, streaming pipeline)...", force=True)
     try:
         warmup_session = StreamingSession(model, sp, temperature=0.0)
@@ -248,8 +306,19 @@ def load_voxtral():
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
-def _create_session():
+def _create_session(language: str | None = None):
     """Create a new StreamingSession (may be called from a thread)."""
+    if language and language != "auto" and language in _verified_lang_tokens:
+        # Temporarily rebind _build_prompt_tokens so StreamingSession picks up the language.
+        import functools
+        import voxmlx as _vx
+        original = _vx._build_prompt_tokens
+        _vx._build_prompt_tokens = functools.partial(_patched_build_prompt_tokens, language=language)
+        try:
+            session = StreamingSession(model, sp, temperature=0.0)
+        finally:
+            _vx._build_prompt_tokens = original
+        return session
     return StreamingSession(model, sp, temperature=0.0)
 
 
@@ -331,14 +400,27 @@ async def handle_client(websocket):
 
         elif isinstance(message, str):
             cmd = message.strip().lower()
-            if cmd == "start_session":
-                log("[server] Received start_session, creating new session...", force=True)
+            # start_session may be a plain string (legacy) or JSON object
+            start_json: dict | None = None
+            if message.strip().startswith("{"):
+                try:
+                    start_json = json.loads(message)
+                except json.JSONDecodeError:
+                    pass
+            is_start_session = (
+                cmd == "start_session"
+                or (start_json is not None and start_json.get("cmd") == "start_session")
+            )
+            requested_language = start_json.get("language") if start_json else None
+
+            if is_start_session:
+                log(f"[server] Received start_session (language={requested_language!r})...", force=True)
                 if pre_allocated_session is not None:
                     session = pre_allocated_session
                     pre_allocated_session = None
                     log("[server] Using pre-allocated session", force=True)
                 else:
-                    session = await asyncio.to_thread(_create_session)
+                    session = await asyncio.to_thread(_create_session, requested_language)
                 first_chunk_received_at = None
                 first_delta_sent = False
                 first_feed_done = False
@@ -366,7 +448,7 @@ async def handle_client(websocket):
                 first_delta_sent = False
                 first_feed_done = False
                 audio_buffer = np.array([], dtype=np.float32)
-                # Pre-allocate next session off the critical path.
+                # Pre-allocate next session off the critical path (no language — will re-create on next start_session if needed).
                 pre_allocated_session = await asyncio.to_thread(_create_session)
 
     log("[server] Client disconnected", force=True)

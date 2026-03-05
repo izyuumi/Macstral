@@ -151,7 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing {
-                self.webSocketClient.startSession()
+                self.webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             }
         }
 
@@ -466,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Streaming mode: start WS session immediately for real-time transcription.
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession()
+                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             } else {
                 let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: serverURL)
@@ -513,7 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The onSessionCreated callback will flush pending chunks and send commit.
             print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession()
+                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             } else if let port = backendManager.serverPort {
                 let url = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: url)
