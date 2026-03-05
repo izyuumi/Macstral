@@ -104,7 +104,7 @@ final class TranscriptHistoryTests: XCTestCase {
 
     // MARK: - Copy-to-clipboard content
 
-    func testCopyContentMatchesEntryText() {
+    func testCopyContentMatchesEntryText() throws {
         let expected = "Dictation result for clipboard"
         history.add(expected)
         let entry = try XCTUnwrap(history.entries.first)
