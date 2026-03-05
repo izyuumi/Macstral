@@ -158,6 +158,7 @@ struct PreferencesView: View {
     @State private var modelQuality: ModelQuality
     @State private var pendingModelQuality: ModelQuality?
     @State private var showModelDownloadAlert: Bool = false
+    @State private var autoPunctuationEnabled: Bool
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
     var onModelQualityChanged: ((ModelQuality) -> Void)?
 
@@ -168,6 +169,7 @@ struct PreferencesView: View {
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
         _language = State(initialValue: LanguageSettings.current)
         _modelQuality = State(initialValue: ModelQualitySettings.current)
+        _autoPunctuationEnabled = State(initialValue: AutoPunctuationSettings.isEnabled)
         self.onHotkeyChanged = onHotkeyChanged
     }
 
@@ -239,9 +241,23 @@ struct PreferencesView: View {
                 }
             }
         }
+
+            Section {
+                Toggle(isOn: $autoPunctuationEnabled) {
+                    Text("Auto-punctuate transcripts")
+                }
+            } footer: {
+                Text("Capitalizes the first word and adds a period at the end of each transcription. Turn off for code, commands, or raw text output.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+        }
         .formStyle(.grouped)
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
+        }
+        .onChange(of: autoPunctuationEnabled) { _, newValue in
+            AutoPunctuationSettings.save(newValue)
         }
         .onChange(of: language) { _, newLang in
             LanguageSettings.current = newLang

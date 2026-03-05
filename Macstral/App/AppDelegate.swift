@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
     private var preferencesWindow: PreferencesWindow?
+    let transcriptHistory = TranscriptHistory()
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
@@ -250,8 +251,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("[Dictation] Re-committing remaining audio")
                     return
                 }
-                let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawFinal = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Apply auto-punctuation post-processing (capitalize + terminal period).
+                // Runs only on the final transcript — never on streaming deltas.
+                let finalText = TranscriptPostProcessor.process(
+                    rawFinal,
+                    enabled: AutoPunctuationSettings.isEnabled
+                )
                 self.appState.finalTranscript = finalText
+                // Append to session transcript history.
+                if !finalText.isEmpty {
+                    self.transcriptHistory.add(finalText)
+                }
                 if !finalText.isEmpty {
                     if self.debugTranscriptionLogging {
                         print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
