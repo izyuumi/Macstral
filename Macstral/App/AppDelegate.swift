@@ -373,6 +373,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         prefsWindow.onHotkeyChanged = { [weak self] key, mods in
             self?.hotkeyManager.reconfigure(key: key, modifiers: mods)
         }
+        prefsWindow.onModelQualityChanged = { [weak self] newQuality in
+            self?.handleModelQualityChange(newQuality)
+        }
         preferencesWindow = prefsWindow
 
         statusBarController?.onPreferencesRequested = { [weak self] in
@@ -380,6 +383,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
             self?.pasteLastTranscription()
+        }
+    }
+
+    // MARK: - Model Quality
+
+    private func handleModelQualityChange(_ quality: ModelQuality) {
+        // Surface the "Loading model..." state immediately.
+        appState.setupStep = .launching
+        appState.setupStatusText = "Loading \(quality.displayName) model…"
+        webSocketClient.disconnect()
+        Task {
+            await backendManager.restartForModelSwitch()
+            // Re-connect WebSocket to the new server port.
+            if let port = backendManager.serverPort {
+                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+                webSocketClient.connect(to: serverURL)
+            }
+            appState.setupStep = .ready
         }
     }
 

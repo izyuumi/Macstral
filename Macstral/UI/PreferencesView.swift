@@ -155,7 +155,11 @@ struct PreferencesView: View {
     @State private var modifiers: NSEvent.ModifierFlags
     @State private var dictationMode: DictationMode
     @State private var language: TranscriptionLanguage
+    @State private var modelQuality: ModelQuality
+    @State private var pendingModelQuality: ModelQuality?
+    @State private var showModelDownloadAlert: Bool = false
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
+    var onModelQualityChanged: ((ModelQuality) -> Void)?
 
     init(onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
         let (k, m) = HotkeySettings.load()
@@ -163,6 +167,7 @@ struct PreferencesView: View {
         _modifiers = State(initialValue: m)
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
         _language = State(initialValue: LanguageSettings.current)
+        _modelQuality = State(initialValue: ModelQualitySettings.current)
         self.onHotkeyChanged = onHotkeyChanged
     }
 
@@ -210,6 +215,29 @@ struct PreferencesView: View {
                         .font(.caption)
                 }
             }
+
+            Section {
+                LabeledContent("Model quality") {
+                    Picker("", selection: $modelQuality) {
+                        ForEach(ModelQuality.allCases) { tier in
+                            Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+            } footer: {
+                if modelQuality.requiresDownload {
+                    Text("Requires a \(modelQuality.sizeLabel) download. Change takes effect after Macstral restarts the transcription engine.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    Text("Fast is the default — no extra download required. Higher quality tiers use more memory and take longer to load.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            }
         }
         .formStyle(.grouped)
         .onChange(of: dictationMode) { _, newMode in
@@ -217,6 +245,27 @@ struct PreferencesView: View {
         }
         .onChange(of: language) { _, newLang in
             LanguageSettings.current = newLang
+        }
+        .onChange(of: modelQuality) { oldQuality, newQuality in
+            if newQuality.requiresDownload {
+                // Revert picker to old value; show confirmation alert first.
+                pendingModelQuality = newQuality
+                modelQuality = oldQuality
+                showModelDownloadAlert = true
+            } else {
+                ModelQualitySettings.current = newQuality
+                onModelQualityChanged?(newQuality)
+            }
+        }
+        .alert("Download model?", isPresented: $showModelDownloadAlert, presenting: pendingModelQuality) { pending in
+            Button("Download \(pending.sizeLabel) and Switch") {
+                ModelQualitySettings.current = pending
+                modelQuality = pending
+                onModelQualityChanged?(pending)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.downloadConfirmationMessage)
         }
         .onChange(of: key) { _, newKey in
             onHotkeyChanged(newKey, modifiers)
