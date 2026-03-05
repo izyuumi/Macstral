@@ -392,16 +392,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Surface the "Loading model..." state immediately.
         appState.setupStep = .launching
         appState.setupStatusText = "Loading \(quality.displayName) model…"
-        hotkeyManager.disable()
         webSocketClient.disconnect()
         Task {
-            await pythonBackend.restartForModelSwitch()
+            await backendManager.restartForModelSwitch()
             // Re-connect WebSocket to the new server port.
-            if let port = pythonBackend.serverPort {
+            if let port = backendManager.serverPort {
                 webSocketClient.connect(port: port)
             }
             appState.setupStep = .ready
-            hotkeyManager.enable()
         }
     }
 
