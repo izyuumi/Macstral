@@ -1,6 +1,6 @@
 import Foundation
 
-/// Routes audio to the local Voxtral WebSocket inference server.
+/// Routes audio to the local Granite WebSocket inference server.
 /// Keeps the same public interface so the rest of the app is unchanged.
 @MainActor
 class WebSocketClient: NSObject {
@@ -9,9 +9,7 @@ class WebSocketClient: NSObject {
 
     var onConnected: (() -> Void)?
     var onSessionCreated: (() -> Void)?
-    var onTranscriptDelta: ((String) -> Void)?
     var onTranscriptDone: ((String) -> Void)?
-    var onTimingEvent: ((ServerTimingEvent) -> Void)?
     var onError: ((Error) -> Void)?
     var onDisconnect: (() -> Void)?
 
@@ -21,7 +19,6 @@ class WebSocketClient: NSObject {
     private var urlSession: URLSession?
     private var isConnected = false
     private var isAcceptingAudio = false
-    private var cumulativeDeltaText = ""
 
     /// Whether the underlying WebSocket transport is connected.
     var hasActiveConnection: Bool { isConnected }
@@ -56,7 +53,6 @@ class WebSocketClient: NSObject {
         guard isConnected || webSocketTask != nil else { return }
         isConnected = false
         isAcceptingAudio = false
-        cumulativeDeltaText = ""
         webSocketTask?.cancel(with: .normalClosure, reason: nil)
         webSocketTask = nil
         urlSession?.invalidateAndCancel()
@@ -102,7 +98,6 @@ class WebSocketClient: NSObject {
     /// before any subsequent audio chunks.
     func startSession(language: String? = nil) {
         guard isConnected, let task = webSocketTask else { return }
-        cumulativeDeltaText = ""
         isAcceptingAudio = true
 
         // Send a JSON start_session with optional language hint.
@@ -132,7 +127,6 @@ class WebSocketClient: NSObject {
     /// End the current dictation session without closing the WebSocket.
     func endSession() {
         isAcceptingAudio = false
-        cumulativeDeltaText = ""
     }
 
     // MARK: - Receive Loop
@@ -170,21 +164,9 @@ class WebSocketClient: NSObject {
         case .string(let text):
             guard let result = parseServerMessage(text) else { return }
             switch result {
-            case .delta(let transcript, let isIncremental, let firstChunkMs, let feedAudioMs):
-                if isIncremental {
-                    cumulativeDeltaText += transcript
-                    onTranscriptDelta?(cumulativeDeltaText)
-                } else {
-                    cumulativeDeltaText = transcript
-                    onTranscriptDelta?(transcript)
-                }
-                if let ms = firstChunkMs { onTimingEvent?(.firstChunkToFirstDelta(ms)) }
-                if let ms = feedAudioMs  { onTimingEvent?(.feedAudio(ms)) }
-
             case .done(let transcript, let finalizeMs):
-                cumulativeDeltaText = ""
                 onTranscriptDone?(transcript)
-                if let ms = finalizeMs { onTimingEvent?(.finalize(ms)) }
+                if let ms = finalizeMs { print("[Timing] server finalize_ms=\(String(format: "%.1f", ms))") }
 
             case .error(let message):
                 onError?(WebSocketError.serverError(message))
@@ -256,7 +238,6 @@ extension WebSocketClient: URLSessionWebSocketDelegate {
             let wasConnected = self.isConnected
             self.isConnected = false
             self.isAcceptingAudio = false
-            self.cumulativeDeltaText = ""
             self.webSocketTask = nil
             self.urlSession?.invalidateAndCancel()
             self.urlSession = nil
@@ -283,8 +264,4 @@ enum WebSocketError: LocalizedError {
     }
 }
 
-enum ServerTimingEvent {
-    case firstChunkToFirstDelta(Double)
-    case feedAudio(Double)
-    case finalize(Double)
-}
+

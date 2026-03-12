@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var historyWindow: HistoryWindow?
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
-    private var liveCommitTask: Task<Void, Never>?
     private var sessionBufferedAudioBytes = 0
     private var latestTranscript = ""
     private var dictationTargetAppBundleIdentifier = "unknown"
@@ -31,20 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isFinishingDictation = false
     private var pendingAudioChunks: [Data] = []
     private var pendingAudioBytes = 0
-    private let pendingAudioBufferLimitBytes = 512_000
-    private let liveCommitIntervalNs: UInt64 = 400_000_000
-    private let liveCommitMinimumAudioBytes = 2_400
     private let minimumKeyHoldToStopSeconds: TimeInterval = 0.2
     private var hotkeyDownAt: TimeInterval?
     private var wsOpenAt: TimeInterval?
     private var firstAudioSentAt: TimeInterval?
-    private var firstDeltaAt: TimeInterval?
     private var stopRequestedAt: TimeInterval?
     private var commitSentAt: TimeInterval?
     private var startupLagSamples: [Double] = []
     private var wsHandshakeSamples: [Double] = []
     private var wsOpenToFirstAudioSamples: [Double] = []
-    private var firstAudioToFirstDeltaSamples: [Double] = []
     private var stopToDoneSamples: [Double] = []
     private var commitToDoneSamples: [Double] = []
     private let debugTranscriptionLogging = (ProcessInfo.processInfo.environment["MACSTRAL_DEBUG_TRANSCRIPTION"] ?? "").lowercased() == "1"
@@ -148,12 +142,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.onConnected = { [weak self] in
             guard let self else { return }
             print("[WebSocket] Persistent connection established")
-            // If dictation is waiting for the connection, start a session now.
             // In normal mode during .listening, skip — audio is still being recorded locally.
-            if self.appState.dictationMode == .normal && self.appState.dictationStatus == .listening {
-                return
-            }
-            if self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing {
+            // Only start a session if we're already in .processing (key released before WS handshake).
+            if self.appState.dictationStatus == .processing {
                 self.webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             }
         }
@@ -185,37 +176,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !self.requestCommit(force: true) {
                     self.finishDictation()
                 }
-            }
-        }
-
-        webSocketClient.onTranscriptDelta = { [weak self] transcript in
-            guard let self else { return }
-            if self.debugTranscriptionLogging {
-                print("[Dictation] onTranscriptDelta: \"\(transcript.prefix(80))\"")
-            }
-            if self.firstDeltaAt == nil {
-                let now = ProcessInfo.processInfo.systemUptime
-                self.firstDeltaAt = now
-                self.recordDurationSample(
-                    from: self.hotkeyDownAt,
-                    to: now,
-                    label: "hotkey->first_delta",
-                    in: &self.startupLagSamples
-                )
-                self.recordDurationSample(
-                    from: self.firstAudioSentAt,
-                    to: now,
-                    label: "first_audio_sent->first_delta",
-                    in: &self.firstAudioToFirstDeltaSamples
-                )
-            }
-            let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                self.latestTranscript = trimmed
-            }
-            // Only update live transcript UI in streaming mode.
-            if self.appState.dictationMode == .streaming {
-                self.appState.liveTranscript = self.latestTranscript
             }
         }
 
@@ -283,18 +243,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        webSocketClient.onTimingEvent = { [weak self] event in
-            guard let self else { return }
-            switch event {
-            case .firstChunkToFirstDelta(let ms):
-                self.recordServerTiming(ms: ms, label: "server_first_chunk->first_delta", in: &self.firstAudioToFirstDeltaSamples)
-            case .feedAudio(let ms):
-                print("[Timing] server feed_audio_ms=\(String(format: "%.1f", ms))")
-            case .finalize(let ms):
-                print("[Timing] server finalize_ms=\(String(format: "%.1f", ms))")
-            }
-        }
-
         webSocketClient.onDisconnect = { [weak self] in
             guard let self else { return }
             print("[WebSocket] onDisconnect: isFinishing=\(self.isFinishingDictation) status=\(self.appState.dictationStatus)")
@@ -339,37 +287,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appState.audioLevel = audioLevelHistory.reduce(0, +) / Float(audioLevelHistory.count)
 
-        if appState.dictationMode == .normal {
-            // Normal mode: always buffer locally — audio is sent in bulk when the user stops.
-            enqueuePendingAudioChunk(data)
-            audioChunkCount += 1
-            if debugTranscriptionLogging && (audioChunkCount == 1 || audioChunkCount % 20 == 0) {
-                print("[Dictation] Audio chunk #\(audioChunkCount): \(data.count) bytes, pendingBytes=\(pendingAudioBytes)")
-            }
-            return
-        }
-
-        // Streaming mode: send audio in real-time.
-        if webSocketClient.sendAudioChunk(data) {
-            if firstAudioSentAt == nil {
-                let now = ProcessInfo.processInfo.systemUptime
-                firstAudioSentAt = now
-                recordDurationSample(
-                    from: wsOpenAt,
-                    to: now,
-                    label: "ws_open->first_audio_sent",
-                    in: &wsOpenToFirstAudioSamples
-                )
-            }
-            sessionBufferedAudioBytes += data.count
-            audioChunkCount += 1
-            if debugTranscriptionLogging && (audioChunkCount == 1 || audioChunkCount % 20 == 0) {
-                print("[Dictation] Audio chunk #\(audioChunkCount): \(data.count) bytes, total buffered=\(sessionBufferedAudioBytes)")
-            }
-        } else if (appState.dictationStatus == .listening || appState.dictationStatus == .processing) && !webSocketClient.hasActiveSession {
-            // Buffer audio when in .processing state (key released before WS handshake)
-            // so that speech captured before the WebSocket opens is not dropped.
-            enqueuePendingAudioChunk(data)
+        // Always buffer locally — audio is sent in bulk when the user stops.
+        enqueuePendingAudioChunk(data)
+        audioChunkCount += 1
+        if debugTranscriptionLogging && (audioChunkCount == 1 || audioChunkCount % 20 == 0) {
+            print("[Dictation] Audio chunk #\(audioChunkCount): \(data.count) bytes, pendingBytes=\(pendingAudioBytes)")
         }
     }
 
@@ -453,8 +375,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appState.dictationStatus = .listening
         stopCommitTask?.cancel()
         stopCommitTask = nil
-        liveCommitTask?.cancel()
-        liveCommitTask = nil
         isCommitInFlight = false
         isFinalCommitRequested = false
         sessionBufferedAudioBytes = 0
@@ -469,7 +389,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dictationTargetAppBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         wsOpenAt = nil
         firstAudioSentAt = nil
-        firstDeltaAt = nil
         stopRequestedAt = nil
         commitSentAt = nil
 
@@ -489,22 +408,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if appState.dictationMode == .normal {
-            // Normal mode: buffer audio locally, defer WS session until stop.
-            // Ensure persistent connection is alive for when we need it later.
-            if !webSocketClient.hasActiveConnection {
-                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: serverURL)
-            }
-        } else {
-            // Streaming mode: start WS session immediately for real-time transcription.
-            if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
-            } else {
-                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: serverURL)
-                // onConnected callback will call startSession() once the handshake completes.
-            }
+        // Buffer audio locally, defer WS session until stop.
+        // Ensure persistent connection is alive for when we need it later.
+        if !webSocketClient.hasActiveConnection {
+            let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+            webSocketClient.connect(to: serverURL)
         }
     }
 
@@ -537,31 +445,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isAudioCaptureActive = false
         appState.dictationStatus = .processing
         isFinalCommitRequested = true
-        liveCommitTask?.cancel()
-        liveCommitTask = nil
 
-        if appState.dictationMode == .normal {
-            // Normal mode: keep HUD visible to show processing state.
-            // Start WS session now to flush all buffered audio and commit.
-            // The onSessionCreated callback will flush pending chunks and send commit.
-            print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
-            if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
-            } else if let port = backendManager.serverPort {
-                let url = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: url)
-                // onConnected → startSession → onSessionCreated → flush + commit
-            } else {
-                print("[Dictation] stopDictation (normal): no connection or port, finishing")
-                finishDictation()
-            }
+        // Start WS session now to flush all buffered audio and commit.
+        // The onSessionCreated callback will flush pending chunks and send commit.
+        print("[Dictation] stopDictation: starting WS session to flush \(pendingAudioBytes) pending bytes")
+        if webSocketClient.hasActiveConnection {
+            webSocketClient.startSession(language: LanguageSettings.current.backendCode)
+        } else if let port = backendManager.serverPort {
+            let url = URL(string: "ws://127.0.0.1:\(port)")!
+            webSocketClient.connect(to: url)
+            // onConnected → startSession → onSessionCreated → flush + commit
         } else {
-            // Streaming mode: commit immediately — audio was already sent in real-time.
-            print("[Dictation] stopDictation (streaming): sending commit immediately")
-            if !requestCommit(force: true) {
-                print("[Dictation] stopDictation: requestCommit failed, finishing dictation")
-                finishDictation()
-            }
+            print("[Dictation] stopDictation: no connection or port, finishing")
+            finishDictation()
         }
     }
 
@@ -570,8 +466,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isFinishingDictation = true
         stopCommitTask?.cancel()
         stopCommitTask = nil
-        liveCommitTask?.cancel()
-        liveCommitTask = nil
         isCommitInFlight = false
         isFinalCommitRequested = false
         sessionBufferedAudioBytes = 0
@@ -583,7 +477,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyDownAt = nil
         wsOpenAt = nil
         firstAudioSentAt = nil
-        firstDeltaAt = nil
         stopRequestedAt = nil
         commitSentAt = nil
         if isAudioCaptureActive {
@@ -607,8 +500,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[Dictation] requestCommit(force=\(force)): commit already in flight")
             return true
         }
-        if !force && sessionBufferedAudioBytes < liveCommitMinimumAudioBytes {
-            return true
         }
         if webSocketClient.sendCommit() {
             print("[Dictation] requestCommit(force=\(force)): sent commit, bufferedBytes=\(sessionBufferedAudioBytes)")
@@ -624,14 +515,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func enqueuePendingAudioChunk(_ data: Data) {
         pendingAudioChunks.append(data)
         pendingAudioBytes += data.count
-        // In streaming mode, cap the buffer to prevent unbounded growth during WS handshake.
-        // In normal mode, keep all audio — the entire recording is sent at once.
-        if appState.dictationMode == .streaming {
-            while pendingAudioBytes > pendingAudioBufferLimitBytes, !pendingAudioChunks.isEmpty {
-                let removed = pendingAudioChunks.removeFirst()
-                pendingAudioBytes -= removed.count
-            }
-        }
     }
 
     private func flushPendingAudioChunks() -> Bool {
