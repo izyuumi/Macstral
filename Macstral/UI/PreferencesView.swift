@@ -154,13 +154,27 @@ struct PreferencesView: View {
     @State private var key: Key
     @State private var modifiers: NSEvent.ModifierFlags
     @State private var dictationMode: DictationMode
+    @State private var language: TranscriptionLanguage
+    @State private var modelQuality: ModelQuality
+    @State private var historyRetentionDays: Int
+    @State private var historyRetentionEntries: Int
+    @State private var pendingModelQuality: ModelQuality?
+    @State private var showModelDownloadAlert: Bool = false
+    let transcriptHistory: TranscriptHistory?
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
+    var onModelQualityChanged: ((ModelQuality) -> Void)?
 
-    init(onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+    init(transcriptHistory: TranscriptHistory? = nil, onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
         let (k, m) = HotkeySettings.load()
+        let retention = TranscriptHistoryRetention.load()
         _key = State(initialValue: k)
         _modifiers = State(initialValue: m)
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
+        _language = State(initialValue: LanguageSettings.current)
+        _modelQuality = State(initialValue: ModelQualitySettings.current)
+        _historyRetentionDays = State(initialValue: retention.maxAgeDays)
+        _historyRetentionEntries = State(initialValue: retention.maxEntries)
+        self.transcriptHistory = transcriptHistory
         self.onHotkeyChanged = onHotkeyChanged
     }
 
@@ -185,10 +199,105 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
             }
+
+            Section {
+                LabeledContent("Language") {
+                    Picker("", selection: $language) {
+                        ForEach(TranscriptionLanguage.allCases) { lang in
+                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 260)
+                }
+            } footer: {
+                if language.isBeta {
+                    Text("\(language.displayName) is in beta — accuracy may vary. Auto-detect is recommended for most users.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    Text("Sets the transcription language. Auto-detect works well for single-language use; pick a specific language if you speak with an accent or mix languages.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            }
+
+            Section {
+                LabeledContent("Model quality") {
+                    Picker("", selection: $modelQuality) {
+                        ForEach(ModelQuality.allCases) { tier in
+                            Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+            } footer: {
+                if modelQuality.requiresDownload {
+                    Text("Requires a \(modelQuality.sizeLabel) download. Change takes effect after Macstral restarts the transcription engine.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                } else {
+                    Text("Fast is the default — no extra download required. Higher quality tiers use more memory and take longer to load.")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                }
+            }
+
+            Section {
+                LabeledContent("Keep history for") {
+                    Stepper(value: $historyRetentionDays, in: 1...365) {
+                        Text("\(historyRetentionDays) days")
+                    }
+                    .frame(width: 160)
+                }
+                LabeledContent("Max history entries") {
+                    Stepper(value: $historyRetentionEntries, in: 1...5000, step: 50) {
+                        Text("\(historyRetentionEntries)")
+                    }
+                    .frame(width: 160)
+                }
+            } footer: {
+                Text("Dictation history is stored locally only on this Mac and is never synced.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
         }
         .formStyle(.grouped)
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
+        }
+        .onChange(of: language) { _, newLang in
+            LanguageSettings.current = newLang
+        }
+        .onChange(of: modelQuality) { oldQuality, newQuality in
+            if newQuality.requiresDownload {
+                // Revert picker to old value; show confirmation alert first.
+                pendingModelQuality = newQuality
+                modelQuality = oldQuality
+                showModelDownloadAlert = true
+            } else {
+                ModelQualitySettings.current = newQuality
+                onModelQualityChanged?(newQuality)
+            }
+        }
+        .onChange(of: historyRetentionDays) { _, _ in
+            saveHistoryRetentionSettings()
+        }
+        .onChange(of: historyRetentionEntries) { _, _ in
+            saveHistoryRetentionSettings()
+        }
+        .alert("Download model?", isPresented: $showModelDownloadAlert, presenting: pendingModelQuality) { pending in
+            Button("Download \(pending.sizeLabel) and Switch") {
+                ModelQualitySettings.current = pending
+                modelQuality = pending
+                onModelQualityChanged?(pending)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.downloadConfirmationMessage)
         }
         .onChange(of: key) { _, newKey in
             onHotkeyChanged(newKey, modifiers)
@@ -208,5 +317,13 @@ struct PreferencesView: View {
         }
         .frame(width: 360)
         .padding(.vertical, 8)
+    }
+
+    private func saveHistoryRetentionSettings() {
+        TranscriptHistoryRetention(
+            maxAgeDays: historyRetentionDays,
+            maxEntries: historyRetentionEntries
+        ).save()
+        transcriptHistory?.applyRetentionSettings()
     }
 }
