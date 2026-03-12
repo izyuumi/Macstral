@@ -145,14 +145,14 @@ private struct VoxtralSetupRow: View {
     let statusText: String
 
     private var title: String {
-        "Voxtral Model"
+        "Granite Model"
     }
 
     private var detail: String {
         if statusText.isEmpty {
             switch step {
             case .idle:
-                return "Waiting to set up Voxtral..."
+                return "Waiting to set up Granite..."
             case .ready:
                 return "Model is ready."
             case .error(let msg):

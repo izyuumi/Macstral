@@ -5,11 +5,11 @@ import Foundation
 /// The three quality tiers surfaced in the Macstral Preferences.
 /// All models are from mlx-community and run fully on-device via MLX.
 enum ModelQuality: String, CaseIterable, Identifiable {
-    /// mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit — current default, already downloaded.
+    /// mlx-community/granite-4.0-1b-speech-8bit — current default, already downloaded.
     case fast     = "fast"
-    /// mlx-community/Voxtral-Mini-4B-Realtime-6bit — higher accuracy, requires ~1.2 GB extra.
+    /// mlx-community/granite-4.0-1b-speech-8bit — same model, balanced tier alias.
     case balanced = "balanced"
-    /// mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16 — best accuracy, requires ~8.4 GB.
+    /// mlx-community/granite-4.0-1b-speech-8bit — same model, accurate tier alias.
     case accurate = "accurate"
 
     var id: String { rawValue }
@@ -24,17 +24,17 @@ enum ModelQuality: String, CaseIterable, Identifiable {
 
     var sizeLabel: String {
         switch self {
-        case .fast:     return "2.4 GB"
-        case .balanced: return "3.6 GB"
-        case .accurate: return "8.4 GB"
+        case .fast:     return "1.0 GB"
+        case .balanced: return "1.0 GB"
+        case .accurate: return "1.0 GB"
         }
     }
 
     var modelID: String {
         switch self {
-        case .fast:     return "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit"
-        case .balanced: return "mlx-community/Voxtral-Mini-4B-Realtime-6bit"
-        case .accurate: return "mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16"
+        case .fast:     return "mlx-community/granite-4.0-1b-speech-8bit"
+        case .balanced: return "mlx-community/granite-4.0-1b-speech-8bit"
+        case .accurate: return "mlx-community/granite-4.0-1b-speech-8bit"
         }
     }
 

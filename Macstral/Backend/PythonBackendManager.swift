@@ -15,7 +15,7 @@ final class PythonBackendManager: NSObject {
 
     private static let pythonDir = supportDir.appendingPathComponent("python")
     private static let envDir = supportDir.appendingPathComponent("env")
-    private static let modelDir = supportDir.appendingPathComponent("models/voxtral-4bit")
+    private static let modelDir = supportDir.appendingPathComponent("models/granite-speech-8bit")
 
     private static let pythonBinary = pythonDir
         .appendingPathComponent("python/bin/python3.11")
@@ -40,33 +40,8 @@ final class PythonBackendManager: NSObject {
         #endif
     }()
 
-    private static let quantizedModelRevision = "fdebf7b2af834a1db4b8a3c99ab7480b333adf9e"
-    private static let baseModelRevision = "b45b4dc60caf4ad824163aaa0a72adc0ad7beeaf"
-    private static let voxtralMiniRevision = "3060fe34b35ba5d44202ce9ff3c097642914f8f3"
-    private static let modelAssets: [(filename: String, url: URL)] = [
-        ("config.json", quantizedModelFileURL(filename: "config.json")),
-        ("model.safetensors", quantizedModelFileURL(filename: "model.safetensors")),
-        ("model.safetensors.index.json", quantizedModelFileURL(filename: "model.safetensors.index.json")),
-        ("tekken.json", quantizedModelFileURL(filename: "tekken.json")),
-    ]
-
-    private static func quantizedModelFileURL(filename: String) -> URL {
-        URL(
-            string: "https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit/resolve/\(quantizedModelRevision)/\(filename)"
-        )!
-    }
-
-    private static func baseModelFileURL(filename: String) -> URL {
-        URL(
-            string: "https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/resolve/\(baseModelRevision)/\(filename)"
-        )!
-    }
-
-    private static func voxtralMiniFileURL(filename: String) -> URL {
-        URL(
-            string: "https://huggingface.co/mistralai/Voxtral-Mini-3B-2507/resolve/\(voxtralMiniRevision)/\(filename)"
-        )!
-    }
+    // Model files are downloaded automatically by mlx_audio.stt during server startup.
+    // No manual asset list needed for granite-4.0-1b-speech-8bit.
 
     // MARK: - Public Callbacks
 
@@ -124,7 +99,7 @@ final class PythonBackendManager: NSObject {
             // Report the step as pending (not complete) so the UI correctly shows that the
             // model has not been fetched yet; launchServer()/waitForServerPort will update
             // this step as the server progresses through loading.
-            reportStep(.downloadingModel, progress: 0.0, status: "Model will be fetched by voxmlx on first launch...")
+            reportStep(.downloadingModel, progress: 0.0, status: "Model will be fetched by mlx_audio on first launch...")
             try checkSetupValidity(setupToken)
             try await launchServer()
             try checkSetupValidity(setupToken)
@@ -257,7 +232,7 @@ final class PythonBackendManager: NSObject {
         // A stamp file records which dependency set is installed. When the pinned
         // commit changes, the stamp won't match and we'll reinstall.
         let depsStamp = Self.envDir.appendingPathComponent(".macstral_deps_stamp")
-        let expectedStamp = "voxmlx-48bfdec9+websockets==15.0.1"
+        let expectedStamp = "mlx-audio-0.4.0+websockets==15.0.1"
         let currentStamp = (try? String(contentsOf: depsStamp, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         if currentStamp == expectedStamp {
             log("[PythonBackendManager] Dependencies already installed.")
@@ -270,8 +245,7 @@ final class PythonBackendManager: NSObject {
         try fm.createDirectory(at: Self.envDir, withIntermediateDirectories: true)
 
         let packages = [
-            // Pinned to an immutable commit hash to prevent supply-chain risk from mutable branches.
-            "voxmlx @ git+https://github.com/T0mSIlver/voxmlx.git@48bfdec9bc4f4f01390b25b0e098deae6dd3ae6c",
+            "mlx-audio>=0.4.0",
             "websockets==15.0.1",
         ]
 
@@ -370,7 +344,7 @@ final class PythonBackendManager: NSObject {
 
     private func launchServer() async throws {
         try Task.checkCancellation()
-        reportStep(.launching, progress: 0.0, status: "Starting Voxtral server...")
+        reportStep(.launching, progress: 0.0, status: "Starting Granite server...")
         onStatusChange?(.starting)
 
         guard let scriptURL = Bundle.main.url(forResource: "voxtral_server", withExtension: "py") else {
@@ -437,7 +411,7 @@ final class PythonBackendManager: NSObject {
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 600_000_000_000)
-                    throw SetupError.serverStartFailed("Timed out waiting for Voxtral server to become ready.")
+                    throw SetupError.serverStartFailed("Timed out waiting for Granite server to become ready.")
                 }
                 let resolvedPort = try await group.next() ?? 0
                 group.cancelAll()
@@ -453,7 +427,7 @@ final class PythonBackendManager: NSObject {
         isActive = true
         expectedTerminatingProcessID = nil
         log("[PythonBackendManager] Server running on port \(port)")
-        reportStep(.ready, progress: 1.0, status: "Voxtral ready")
+        reportStep(.ready, progress: 1.0, status: "Granite ready")
         onStatusChange?(.ready)
     }
 
@@ -578,8 +552,8 @@ final class PythonBackendManager: NSObject {
                                 loadingModelSeen = true
                                 await MainActor.run {
                                     // Model is now actively being downloaded/loaded by voxmlx.
-                                    manager.reportStep(.downloadingModel, progress: 0.5, status: "Loading Voxtral model into memory...")
-                                    manager.reportStep(.launching, progress: 0.3, status: "Loading Voxtral model into memory...")
+                                    manager.reportStep(.downloadingModel, progress: 0.5, status: "Loading Granite model into memory...")
+                                    manager.reportStep(.launching, progress: 0.3, status: "Loading Granite model into memory...")
                                 }
                             } else if let portNum = Int(trimmed), portNum > 0 {
                                 await MainActor.run {
@@ -611,9 +585,9 @@ final class PythonBackendManager: NSObject {
         let stderrText = recentServerErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         let message: String
         if stderrText.isEmpty {
-            message = "Voxtral server exited unexpectedly."
+            message = "Granite server exited unexpectedly."
         } else {
-            message = "Voxtral server exited unexpectedly: \(stderrText)"
+            message = "Granite server exited unexpectedly: \(stderrText)"
         }
         onStatusChange?(.error(message))
     }
