@@ -4,7 +4,13 @@ import HotKey
 
 final class PreferencesWindow {
     private var window: NSWindow?
+    private let transcriptHistory: TranscriptHistory?
     var onHotkeyChanged: ((Key, NSEvent.ModifierFlags) -> Void)?
+    var onModelQualityChanged: ((ModelQuality) -> Void)?
+
+    init(transcriptHistory: TranscriptHistory? = nil) {
+        self.transcriptHistory = transcriptHistory
+    }
 
     func show() {
         if let existing = window, existing.isVisible {
@@ -13,13 +19,16 @@ final class PreferencesWindow {
             return
         }
 
-        let view = PreferencesView { [weak self] key, mods in
+        var view = PreferencesView(transcriptHistory: transcriptHistory) { [weak self] key, mods in
             self?.onHotkeyChanged?(key, mods)
+        }
+        view.onModelQualityChanged = { [weak self] quality in
+            self?.onModelQualityChanged?(quality)
         }
         let hosting = NSHostingView(rootView: view)
 
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 360, height: 160),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 420),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

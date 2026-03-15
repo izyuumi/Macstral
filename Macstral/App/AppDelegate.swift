@@ -12,15 +12,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let webSocketClient = WebSocketClient()
     private let hotkeyManager = HotkeyManager()
     private let textInserter = AccessibilityTextInserter()
+    private let transcriptHistory = TranscriptHistory()
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
     private var preferencesWindow: PreferencesWindow?
+    private var historyWindow: HistoryWindow?
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
     private var sessionBufferedAudioBytes = 0
     private var latestTranscript = ""
+    private var dictationTargetAppBundleIdentifier = "unknown"
     private var isCommitInFlight = false
     private var isFinalCommitRequested = false
     private var dictationStartedAt: TimeInterval = 0
@@ -151,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing {
-                self.webSocketClient.startSession()
+                self.webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             }
         }
 
@@ -253,6 +256,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.appState.finalTranscript = finalText
                 if !finalText.isEmpty {
+                    self.transcriptHistory.add(
+                        finalText,
+                        appBundleIdentifier: self.dictationTargetAppBundleIdentifier
+                    )
                     if self.debugTranscriptionLogging {
                         print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
                     } else {
@@ -314,6 +321,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var audioChunkCount = 0
+    /// Rolling window of recent RMS levels for smoothed waveform display.
+    private var audioLevelHistory: [Float] = []
+    private let audioLevelHistoryCapacity = 10
     private func handleAudioChunk(_ data: Data) {
         guard appState.dictationStatus == .listening || appState.dictationStatus == .processing else { return }
 
@@ -323,7 +333,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rms = sqrt(sumOfSquares / Double(max(samples.count, 1)))
         let db = 20 * log10(max(rms, 1) / 32768.0)
         let normalized = Float(max(0, min(1, (db + 50) / 50)))
-        appState.audioLevel = normalized
+        audioLevelHistory.append(normalized)
+        if audioLevelHistory.count > audioLevelHistoryCapacity {
+            audioLevelHistory.removeFirst()
+        }
+        appState.audioLevel = audioLevelHistory.reduce(0, +) / Float(audioLevelHistory.count)
 
         if appState.dictationMode == .normal {
             // Normal mode: always buffer locally — audio is sent in bulk when the user stops.
@@ -362,17 +376,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Preferences
 
     private func setupPreferences() {
-        let prefsWindow = PreferencesWindow()
+        let prefsWindow = PreferencesWindow(transcriptHistory: transcriptHistory)
         prefsWindow.onHotkeyChanged = { [weak self] key, mods in
             self?.hotkeyManager.reconfigure(key: key, modifiers: mods)
+        }
+        prefsWindow.onModelQualityChanged = { [weak self] newQuality in
+            self?.handleModelQualityChange(newQuality)
         }
         preferencesWindow = prefsWindow
 
         statusBarController?.onPreferencesRequested = { [weak self] in
             self?.preferencesWindow?.show()
         }
+        historyWindow = HistoryWindow(history: transcriptHistory)
+        statusBarController?.onHistoryRequested = { [weak self] in
+            self?.historyWindow?.show()
+        }
         statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
             self?.pasteLastTranscription()
+        }
+    }
+
+    // MARK: - Model Quality
+
+    private func handleModelQualityChange(_ quality: ModelQuality) {
+        // Surface the "Loading model..." state immediately.
+        appState.setupStep = .launching
+        appState.setupStatusText = "Loading \(quality.displayName) model…"
+        webSocketClient.disconnect()
+        Task {
+            await backendManager.restartForModelSwitch()
+            // Re-connect WebSocket to the new server port.
+            if let port = backendManager.serverPort {
+                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
+                webSocketClient.connect(to: serverURL)
+            }
+            appState.setupStep = .ready
         }
     }
 
@@ -427,6 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingAudioChunks.removeAll(keepingCapacity: false)
         pendingAudioBytes = 0
         hotkeyDownAt = ProcessInfo.processInfo.systemUptime
+        dictationTargetAppBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         wsOpenAt = nil
         firstAudioSentAt = nil
         firstDeltaAt = nil
@@ -459,7 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Streaming mode: start WS session immediately for real-time transcription.
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession()
+                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             } else {
                 let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: serverURL)
@@ -506,7 +546,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The onSessionCreated callback will flush pending chunks and send commit.
             print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession()
+                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
             } else if let port = backendManager.serverPort {
                 let url = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: url)
@@ -536,6 +576,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isFinalCommitRequested = false
         sessionBufferedAudioBytes = 0
         latestTranscript = ""
+        dictationTargetAppBundleIdentifier = "unknown"
         dictationStartedAt = 0
         pendingAudioChunks.removeAll(keepingCapacity: false)
         pendingAudioBytes = 0
@@ -550,6 +591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isAudioCaptureActive = false
         }
         appState.audioLevel = 0
+        audioLevelHistory.removeAll(keepingCapacity: true)
         appState.dictationStatus = .idle
         webSocketClient.endSession()
         hudPanel?.hide()
