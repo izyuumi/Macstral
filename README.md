@@ -115,4 +115,11 @@ Xcode 16+ required. The project uses Swift Package Manager for the [HotKey](http
 
 ## License
 
-MIT
+Macstral is proprietary software. © Yumi Izumi. All rights reserved.
+
+The source is published for transparency, but it is **not** licensed for
+redistribution, resale, or competing use. Use of the compiled app is governed by
+the [End User License Agreement](EULA.md).
+
+Versions released under git tags up to and including **v0.3.0** remain available
+under the MIT License.
