@@ -14,6 +14,7 @@ final class AudioNotesRecorder {
     private let appState: AppState
     private let store: AudioNotesStore
     private let capture = SystemAudioCaptureManager()
+    private let micCapture = AudioCaptureManager()
     private let client = AudioNotesBackendClient()
     private let portProvider: () -> Int?
     private let languageProvider: () -> String?
@@ -29,6 +30,9 @@ final class AudioNotesRecorder {
 
     private var writer: AudioFileWriter?
     private var recordingURL: URL?
+    private var micWriter: AudioFileWriter?
+    private var micURL: URL?
+    private var isMicActive = false
     private var timerTask: Task<Void, Never>?
     private var recordingStartedAt: TimeInterval = 0
     private var processingTask: Task<Void, Never>?
@@ -86,6 +90,8 @@ final class AudioNotesRecorder {
             return
         }
 
+        startMicrophoneIfEnabled()
+
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
         appState.audioNotesRecordingSeconds = 0
         appState.audioNotesProgressText = ""
@@ -93,27 +99,62 @@ final class AudioNotesRecorder {
         startTimer()
     }
 
+    /// Starts microphone capture alongside the system tap when the user has opted in and granted
+    /// mic permission. Best-effort: a mic failure leaves the system-audio recording running.
+    private func startMicrophoneIfEnabled() {
+        guard appState.audioNotesIncludeMicrophone, appState.hasMicPermission else { return }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macstral-audionote-mic-\(UUID().uuidString).pcm")
+        guard let micWriter = AudioFileWriter(url: url) else { return }
+
+        micCapture.onAudioChunk = { data in
+            micWriter.write(data)
+        }
+        do {
+            try micCapture.startCapture()
+            self.micWriter = micWriter
+            self.micURL = url
+            self.isMicActive = true
+        } catch {
+            micCapture.onAudioChunk = nil
+            _ = micWriter.finishAndByteCount()
+            try? FileManager.default.removeItem(at: url)
+            print("[AudioNotesRecorder] Microphone capture failed, continuing system-audio only: \(error)")
+        }
+    }
+
     /// Stops capture and kicks off transcription + notes generation.
     func stopRecording() {
         guard case .recording = appState.audioNotesStatus else { return }
         capture.stopCapture()
         capture.onAudioChunk = nil
+        if isMicActive {
+            micCapture.stopCapture()
+            micCapture.onAudioChunk = nil
+            isMicActive = false
+        }
         stopTimer()
 
-        let byteCount = writer?.finishAndByteCount() ?? 0
+        _ = writer?.finishAndByteCount()
+        _ = micWriter?.finishAndByteCount()
         writer = nil
-        guard let url = recordingURL else {
+        micWriter = nil
+        guard let systemURL = recordingURL else {
+            try? micURL.map { try FileManager.default.removeItem(at: $0) }
+            micURL = nil
             appState.audioNotesStatus = .idle
             return
         }
+        let micRecordingURL = micURL
         recordingURL = nil
+        micURL = nil
 
-        let duration = Double(byteCount) / Double(Self.bytesPerSecond)
         appState.audioNotesStatus = .transcribing
         appState.audioNotesProgressText = "Preparing transcription…"
 
         processingTask = Task { [weak self] in
-            await self?.process(recordingURL: url, duration: duration)
+            await self?.process(systemURL: systemURL, micURL: micRecordingURL)
         }
     }
 
@@ -147,8 +188,11 @@ final class AudioNotesRecorder {
 
     // MARK: - Pipeline
 
-    private func process(recordingURL url: URL, duration: Double) async {
-        defer { try? FileManager.default.removeItem(at: url) }
+    private func process(systemURL: URL, micURL: URL?) async {
+        defer {
+            try? FileManager.default.removeItem(at: systemURL)
+            try? micURL.map { try FileManager.default.removeItem(at: $0) }
+        }
 
         guard let port = portProvider() else {
             appState.audioNotesStatus = .error("Transcription engine isn't ready yet.")
@@ -156,10 +200,16 @@ final class AudioNotesRecorder {
         }
         client.connect(port: port)
 
-        guard let pcm = try? Data(contentsOf: url), !pcm.isEmpty else {
+        // Mix the system-audio and (optional) microphone tracks. Both are PCM-16 mono 16 kHz,
+        // so they can be summed sample-for-sample.
+        let systemPCM = (try? Data(contentsOf: systemURL)) ?? Data()
+        let micPCM = micURL.flatMap { try? Data(contentsOf: $0) } ?? Data()
+        let pcm = Self.mixPCM(systemPCM, micPCM)
+        guard !pcm.isEmpty else {
             appState.audioNotesStatus = .error("The recording was empty.")
             return
         }
+        let duration = Double(pcm.count) / Double(Self.bytesPerSecond)
 
         let language = languageProvider()
         let segments = Self.makeSegments(from: pcm)
@@ -211,6 +261,36 @@ final class AudioNotesRecorder {
             notes: notes,
             durationSeconds: duration
         )
+    }
+
+    /// Sums two PCM-16 mono tracks sample-for-sample with clipping. If either track is empty the
+    /// other is returned unchanged. The result length matches the longer track (the shorter is
+    /// treated as silence past its end).
+    private static func mixPCM(_ a: Data, _ b: Data) -> Data {
+        if a.isEmpty { return b }
+        if b.isEmpty { return a }
+
+        let countA = a.count / 2
+        let countB = b.count / 2
+        let n = max(countA, countB)
+        var out = Data(count: n * 2)
+
+        a.withUnsafeBytes { (aRaw: UnsafeRawBufferPointer) in
+            b.withUnsafeBytes { (bRaw: UnsafeRawBufferPointer) in
+                out.withUnsafeMutableBytes { (outRaw: UnsafeMutableRawBufferPointer) in
+                    let aSamples = aRaw.bindMemory(to: Int16.self)
+                    let bSamples = bRaw.bindMemory(to: Int16.self)
+                    let outSamples = outRaw.bindMemory(to: Int16.self)
+                    for i in 0..<n {
+                        let av = i < countA ? Int32(aSamples[i]) : 0
+                        let bv = i < countB ? Int32(bSamples[i]) : 0
+                        let sum = max(Int32(Int16.min), min(Int32(Int16.max), av + bv))
+                        outSamples[i] = Int16(sum)
+                    }
+                }
+            }
+        }
+        return out
     }
 
     /// Splits the PCM buffer into segment-sized slices on even byte boundaries (Int16 frames).

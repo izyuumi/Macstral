@@ -77,6 +77,13 @@ final class AppState {
     var audioNotesRecordingSeconds: Int = 0
     var audioNotesProgressText: String = ""
 
+    /// When enabled (and mic permission is granted), the microphone is mixed into the system-audio
+    /// recording so the local speaker's voice is captured alongside what's playing (e.g. calls).
+    var audioNotesIncludeMicrophone: Bool {
+        get { UserDefaults.standard.object(forKey: "audioNotesIncludeMic") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "audioNotesIncludeMic") }
+    }
+
     // MARK: Dictation Mode
 
     var dictationMode: DictationMode {

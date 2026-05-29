@@ -111,6 +111,10 @@ private struct AudioNotesView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
+            micToggle
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+
             statusBanner
                 .padding(.horizontal, 12)
                 .padding(.bottom, 8)
@@ -171,6 +175,22 @@ private struct AudioNotesView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.red)
+        }
+    }
+
+    @ViewBuilder
+    private var micToggle: some View {
+        switch appState.audioNotesStatus {
+        case .idle, .error:
+            Toggle("Include microphone", isOn: Binding(
+                get: { appState.audioNotesIncludeMicrophone },
+                set: { appState.audioNotesIncludeMicrophone = $0 }
+            ))
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        default:
+            EmptyView()
         }
     }
 
