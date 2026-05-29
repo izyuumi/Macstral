@@ -120,6 +120,7 @@ struct LicenseView: View {
         Section {
             LabeledContent("Version", value: Self.appVersion)
             Link("End User License Agreement", destination: Self.eulaURL)
+            Link("Third-party licenses & acknowledgements", destination: Self.acknowledgementsURL)
         } footer: {
             Text("© Yumi Izumi. Macstral is proprietary software, provided under the EULA.")
                 .font(.caption)
@@ -134,6 +135,7 @@ struct LicenseView: View {
     }
 
     private static let eulaURL = URL(string: "https://github.com/izyuumi/Macstral/blob/main/EULA.md")!
+    private static let acknowledgementsURL = URL(string: "https://github.com/izyuumi/Macstral/blob/main/THIRD_PARTY_LICENSES.md")!
 
     // MARK: Actions
 

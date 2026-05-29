@@ -2,7 +2,7 @@
 
 > Hold a key. Speak. Release. Text appears wherever your cursor is.
 
-Macstral is a macOS menu bar app for on-device, hotkey-driven dictation. Everything runs locally on your Mac using [Voxtral MLX](https://github.com/awni/voxmlx) — Mistral's open voice model running via Apple's MLX framework. No audio is ever uploaded.
+Macstral is a macOS menu bar app for on-device, hotkey-driven dictation. Everything runs locally on your Mac using [Voxtral MLX](https://github.com/T0mSIlver/voxmlx) — Mistral's open (Apache-2.0) voice model running via Apple's MLX framework. No audio is ever uploaded.
 
 **Current version: 0.3.0** · Requires Apple Silicon
 

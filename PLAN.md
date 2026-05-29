@@ -230,9 +230,12 @@ isn't strictly required to charge. Realistic: ~1–2 focused weekends.
 
 ## 9. Risks
 
-- **Voxtral / voxmlx redistribution license** — confirm the bundled model weights +
-  voxmlx code permit commercial redistribution before charging. (mlx-community models are
-  generally permissive, but verify per-model license; this is a real pre-sale checklist item.)
+- **Voxtral / voxmlx redistribution license** — ✅ RESOLVED (verified 2026-05-29). All
+  Voxtral tiers (mlx-community 4bit/6bit/fp16) and the Mistral base models
+  (`Voxtral-Mini-4B-Realtime-2602`, `Voxtral-Mini-3B-2507`) are **Apache-2.0**; voxmlx is
+  **MIT** (© Awni Hannun). Commercial use + redistribution permitted. Required attribution
+  (Apache-2.0 NOTICE for Voxtral, MIT notice for voxmlx) is bundled in
+  `THIRD_PARTY_LICENSES.md` and linked from Preferences → License → About. GREEN to sell.
 - **Bundled Python backend size/fragility** — already shipping, but large download; not a
   monetization blocker, just support surface.
 - **Refund/support load** — one-time + merchant-of-record (LS handles tax + refunds)
