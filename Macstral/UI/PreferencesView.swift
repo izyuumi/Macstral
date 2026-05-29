@@ -160,11 +160,15 @@ struct PreferencesView: View {
     @State private var historyRetentionEntries: Int
     @State private var pendingModelQuality: ModelQuality?
     @State private var showModelDownloadAlert: Bool = false
+    @State private var showUpsell: Bool = false
+    @State private var upsellHighlight: String?
     let transcriptHistory: TranscriptHistory?
+    let licenseManager: LicenseManager
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
     var onModelQualityChanged: ((ModelQuality) -> Void)?
 
-    init(transcriptHistory: TranscriptHistory? = nil, onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+    init(transcriptHistory: TranscriptHistory? = nil, licenseManager: LicenseManager, onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+        self.licenseManager = licenseManager
         let (k, m) = HotkeySettings.load()
         let retention = TranscriptHistoryRetention.load()
         _key = State(initialValue: k)
@@ -204,7 +208,8 @@ struct PreferencesView: View {
                 LabeledContent("Language") {
                     Picker("", selection: $language) {
                         ForEach(TranscriptionLanguage.allCases) { lang in
-                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                            let locked = !FeatureGate.isLanguageUnlocked(lang, isPro: licenseManager.isPro)
+                            Text("\(lang.flag) \(lang.displayName)\(locked ? "  🔒" : "")").tag(lang)
                         }
                     }
                     .labelsHidden()
@@ -227,7 +232,8 @@ struct PreferencesView: View {
                 LabeledContent("Model quality") {
                     Picker("", selection: $modelQuality) {
                         ForEach(ModelQuality.allCases) { tier in
-                            Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
+                            let locked = !FeatureGate.isModelQualityUnlocked(tier, isPro: licenseManager.isPro)
+                            Text("\(tier.displayName) (\(tier.sizeLabel))\(locked ? "  🔒" : "")").tag(tier)
                         }
                     }
                     .labelsHidden()
@@ -269,10 +275,22 @@ struct PreferencesView: View {
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
         }
-        .onChange(of: language) { _, newLang in
+        .onChange(of: language) { oldLang, newLang in
+            guard FeatureGate.isLanguageUnlocked(newLang, isPro: licenseManager.isPro) else {
+                language = oldLang
+                upsellHighlight = "All languages"
+                showUpsell = true
+                return
+            }
             LanguageSettings.current = newLang
         }
         .onChange(of: modelQuality) { oldQuality, newQuality in
+            guard FeatureGate.isModelQualityUnlocked(newQuality, isPro: licenseManager.isPro) else {
+                modelQuality = oldQuality
+                upsellHighlight = "Balanced & Accurate models"
+                showUpsell = true
+                return
+            }
             if newQuality.requiresDownload {
                 // Revert picker to old value; show confirmation alert first.
                 pendingModelQuality = newQuality
@@ -317,6 +335,9 @@ struct PreferencesView: View {
         }
         .frame(width: 360)
         .padding(.vertical, 8)
+        .sheet(isPresented: $showUpsell) {
+            UpsellSheet(licenseManager: licenseManager, highlight: upsellHighlight)
+        }
     }
 
     private func saveHistoryRetentionSettings() {

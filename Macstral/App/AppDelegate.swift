@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Subsystems
 
     private let appState = AppState()
+    private let licenseManager = LicenseManager.shared
     private let backendManager = PythonBackendManager()
     private let audioManager = AudioCaptureManager()
     private let webSocketClient = WebSocketClient()
@@ -61,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         checkPermissions()
 
+        // Re-validate the Pro license in the background; cold-start state is already
+        // resolved synchronously from Keychain by LicenseManager.init.
+        Task { [licenseManager] in await licenseManager.validate() }
+
         if appState.isOnboardingNeeded {
             showOnboarding()
         } else {
@@ -73,6 +78,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.disconnect()
         hotkeyManager.teardown()
         backendManager.stop()
+    }
+
+    // MARK: - Feature Gating
+
+    /// The language code sent to the backend, clamped to the Free tier's allowed set when the
+    /// user is not Pro. Enforced here (not just in the UI) so a stale UserDefaults value left
+    /// over from a previous Pro session cannot unlock a paid language.
+    private var effectiveLanguageCode: String? {
+        FeatureGate.effectiveLanguage(LanguageSettings.current, isPro: licenseManager.isPro).backendCode
     }
 
     // MARK: - Permissions
@@ -154,7 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             if self.appState.dictationStatus == .listening || self.appState.dictationStatus == .processing {
-                self.webSocketClient.startSession(language: LanguageSettings.current.backendCode)
+                self.webSocketClient.startSession(language: self.effectiveLanguageCode)
             }
         }
 
@@ -253,7 +267,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("[Dictation] Re-committing remaining audio")
                     return
                 }
-                let finalText = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawFinal = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Pro: auto-punctuate/format the final transcript. Free: insert verbatim.
+                // Runs only on the final `done` text, never during streaming (avoids cursor jumps).
+                let finalText = FeatureGate.isAutoPunctuationEnabled(isPro: self.licenseManager.isPro)
+                    ? TranscriptFormatter.format(rawFinal)
+                    : rawFinal
                 self.appState.finalTranscript = finalText
                 if !finalText.isEmpty {
                     self.transcriptHistory.add(
@@ -376,7 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Preferences
 
     private func setupPreferences() {
-        let prefsWindow = PreferencesWindow(transcriptHistory: transcriptHistory)
+        let prefsWindow = PreferencesWindow(transcriptHistory: transcriptHistory, licenseManager: licenseManager)
         prefsWindow.onHotkeyChanged = { [weak self] key, mods in
             self?.hotkeyManager.reconfigure(key: key, modifiers: mods)
         }
@@ -388,7 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController?.onPreferencesRequested = { [weak self] in
             self?.preferencesWindow?.show()
         }
-        historyWindow = HistoryWindow(history: transcriptHistory)
+        historyWindow = HistoryWindow(history: transcriptHistory, licenseManager: licenseManager)
         statusBarController?.onHistoryRequested = { [weak self] in
             self?.historyWindow?.show()
         }
@@ -499,7 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             // Streaming mode: start WS session immediately for real-time transcription.
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
+                webSocketClient.startSession(language: self.effectiveLanguageCode)
             } else {
                 let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: serverURL)
@@ -546,7 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The onSessionCreated callback will flush pending chunks and send commit.
             print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
             if webSocketClient.hasActiveConnection {
-                webSocketClient.startSession(language: LanguageSettings.current.backendCode)
+                webSocketClient.startSession(language: self.effectiveLanguageCode)
             } else if let port = backendManager.serverPort {
                 let url = URL(string: "ws://127.0.0.1:\(port)")!
                 webSocketClient.connect(to: url)

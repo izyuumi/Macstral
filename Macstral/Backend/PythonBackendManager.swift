@@ -384,7 +384,12 @@ final class PythonBackendManager: NSObject {
         environment["MACSTRAL_ENV_DIR"] = Self.envDir.path
         environment["MACSTRAL_MODEL_DIR"] = Self.modelDir.path
         // Model quality selector: override model ID for non-Fast tiers.
-        let selectedQuality = ModelQualitySettings.current
+        // Clamp to the Free tier (Fast) when the user is not Pro, so a stale UserDefaults
+        // value cannot launch a paid model tier without a license.
+        let selectedQuality = FeatureGate.effectiveModelQuality(
+            ModelQualitySettings.current,
+            isPro: LicenseManager.shared.isPro
+        )
         environment["MACSTRAL_MODEL_ID"] = selectedQuality.modelID
         // For non-Fast tiers, set HF_HOME so HuggingFace stores model alongside the app.
         if selectedQuality != .fast {
