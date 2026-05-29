@@ -14,11 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotkeyManager = HotkeyManager()
     private let textInserter = AccessibilityTextInserter()
     private let transcriptHistory = TranscriptHistory()
+    private let audioNotesStore = AudioNotesStore()
+    private var audioNotesRecorder: AudioNotesRecorder?
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
     private var preferencesWindow: PreferencesWindow?
     private var historyWindow: HistoryWindow?
+    private var audioNotesWindow: AudioNotesWindow?
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
@@ -55,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusBarController = StatusBarController()
         setupPreferences()
+        setupAudioNotes()
         setupBackendCallbacks()
         setupWebSocketCallbacks()
         setupAudioCallback()
@@ -414,6 +418,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController?.onPasteLastTranscriptionRequested = { [weak self] in
             self?.pasteLastTranscription()
         }
+    }
+
+    // MARK: - Audio Notes
+
+    private func setupAudioNotes() {
+        let recorder = AudioNotesRecorder(
+            appState: appState,
+            store: audioNotesStore,
+            portProvider: { [weak self] in self?.backendManager.serverPort },
+            languageProvider: { [weak self] in self?.effectiveLanguageCode }
+        )
+        audioNotesRecorder = recorder
+
+        audioNotesWindow = AudioNotesWindow(
+            store: audioNotesStore,
+            appState: appState,
+            onStartRecording: { [weak self] in self?.audioNotesRecorder?.startRecording() },
+            onStopRecording: { [weak self] in self?.audioNotesRecorder?.stopRecording() },
+            onRegenerate: { [weak self] note in self?.audioNotesRecorder?.regenerateNotes(for: note) },
+            onExport: { [weak self] note in self?.exportAudioNote(note) }
+        )
+
+        statusBarController?.onAudioNotesRequested = { [weak self] in
+            self?.audioNotesWindow?.show()
+        }
+        statusBarController?.onToggleAudioRecordingRequested = { [weak self] in
+            self?.toggleAudioNotesRecording()
+        }
+
+        observeAudioNotesStatus()
+    }
+
+    /// Starts or stops the system-audio recording depending on the current state.
+    private func toggleAudioNotesRecording() {
+        guard let recorder = audioNotesRecorder else { return }
+        if recorder.isRecording {
+            recorder.stopRecording()
+        } else {
+            guard appState.backendStatus == .ready else {
+                appState.audioNotesStatus = .error("Transcription engine isn't ready yet.")
+                return
+            }
+            recorder.startRecording()
+        }
+    }
+
+    /// Re-arming observer that mirrors the Audio Notes pipeline state into the menu bar.
+    private func observeAudioNotesStatus() {
+        withObservationTracking {
+            _ = appState.audioNotesStatus
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.statusBarController?.updateAudioNotesStatus(self.appState.audioNotesStatus)
+                self.observeAudioNotesStatus()
+            }
+        }
+    }
+
+    /// Copies a note's title, AI notes, and full transcript to the clipboard as Markdown.
+    private func exportAudioNote(_ note: AudioNote) {
+        var parts = ["# \(note.title)"]
+        if !note.notes.isEmpty { parts.append(note.notes) }
+        if !note.transcript.isEmpty { parts.append("## Transcript\n\n\(note.transcript)") }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(parts.joined(separator: "\n\n"), forType: .string)
     }
 
     // MARK: - Model Quality

@@ -259,6 +259,75 @@ if _model_dir:
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", _model_dir)
 DEBUG_TRANSCRIPTION = os.environ.get("MACSTRAL_DEBUG_TRANSCRIPTION", "").lower() in {"1", "true", "yes"}
 
+# ---------------------------------------------------------------------------
+# Notes LLM globals (lazy — loaded only on first generate_notes command)
+# ---------------------------------------------------------------------------
+NOTES_MODEL_ID = os.environ.get("MACSTRAL_NOTES_MODEL_ID", "mlx-community/Qwen2.5-3B-Instruct-4bit")
+_notes_model = None
+_notes_tokenizer = None
+
+
+def _load_notes_model():
+    """Lazily load the notes LLM. Safe to call multiple times — loads only once."""
+    global _notes_model, _notes_tokenizer
+    if _notes_model is not None:
+        return
+    log(f"[notes] Loading notes model: {NOTES_MODEL_ID} ...", force=True)
+    # Import inside the function so mlx_lm is never imported at ASR startup.
+    from mlx_lm import load  # noqa: PLC0415
+    _notes_model, _notes_tokenizer = load(NOTES_MODEL_ID)
+    log("[notes] Notes model loaded.", force=True)
+
+
+_NOTES_SYSTEM_PROMPT = (
+    "You are a meeting-notes assistant. "
+    "Given a transcript, produce concise, well-structured GitHub-flavored Markdown with these sections:\n"
+    "## Summary\n(2-4 sentences capturing the main topic and outcome)\n\n"
+    "## Key Points\n(bulleted list of the most important points discussed)\n\n"
+    "## Action Items\n(bulleted checklist; include owner if mentioned, e.g. `- [ ] @Alice review PR`; "
+    "if no owner known use `- [ ] ...`)\n\n"
+    "## Decisions\n(bulleted list of decisions made; omit this section entirely if none)\n\n"
+    "Respond ONLY with the Markdown — no preamble, no trailing commentary."
+)
+
+_NOTES_MAX_TRANSCRIPT_CHARS = 12_000
+
+
+def _generate_notes(transcript: str) -> str:
+    """Synchronous; meant to be called via asyncio.to_thread."""
+    _load_notes_model()
+
+    # Truncate very long transcripts to bound latency.
+    if len(transcript) > _NOTES_MAX_TRANSCRIPT_CHARS:
+        head = transcript[: _NOTES_MAX_TRANSCRIPT_CHARS // 2]
+        tail = transcript[-(_NOTES_MAX_TRANSCRIPT_CHARS // 2):]
+        transcript = head + "\n\n[... transcript truncated for length ...]\n\n" + tail
+        log(f"[notes] Transcript truncated to ~{_NOTES_MAX_TRANSCRIPT_CHARS} chars.", force=True)
+
+    messages = [
+        {"role": "system", "content": _NOTES_SYSTEM_PROMPT},
+        {"role": "user", "content": transcript},
+    ]
+
+    if getattr(_notes_tokenizer, "chat_template", None):
+        prompt = _notes_tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+    else:
+        # Plain fallback when no chat template is configured.
+        prompt = (
+            f"<|system|>\n{_NOTES_SYSTEM_PROMPT}\n<|user|>\n{transcript}\n<|assistant|>\n"
+        )
+
+    from mlx_lm import generate  # noqa: PLC0415
+    try:
+        result = generate(_notes_model, _notes_tokenizer, prompt=prompt, max_tokens=1200, verbose=False)
+    except TypeError:
+        # Older mlx_lm versions may not accept keyword-only prompt=.
+        result = generate(_notes_model, _notes_tokenizer, prompt, max_tokens=1200)
+
+    return result.strip()
+
 
 def log(msg: str, *, force: bool = False):
     if not force and not DEBUG_TRANSCRIPTION:
@@ -455,6 +524,20 @@ async def handle_client(websocket):
                 audio_buffer = np.array([], dtype=np.float32)
                 # Pre-allocate next session off the critical path (no language — will re-create on next start_session if needed).
                 pre_allocated_session = await asyncio.to_thread(_create_session)
+
+            elif start_json is not None and start_json.get("cmd") == "generate_notes":
+                transcript = start_json.get("transcript", "")
+                if not transcript or not transcript.strip():
+                    await websocket.send(json.dumps({"type": "notes_done", "text": ""}))
+                else:
+                    log(f"[notes] generate_notes request, transcript length={len(transcript)}", force=True)
+                    try:
+                        notes = await asyncio.to_thread(_generate_notes, transcript)
+                        log("[notes] generate_notes complete.", force=True)
+                        await websocket.send(json.dumps({"type": "notes_done", "text": notes}))
+                    except Exception as exc:
+                        log(f"[notes] generate_notes error: {exc}", force=True)
+                        await websocket.send(json.dumps({"type": "error", "text": str(exc)}))
 
     log("[server] Client disconnected", force=True)
 

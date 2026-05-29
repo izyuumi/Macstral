@@ -34,6 +34,31 @@ The full Apache License 2.0 text is available at
 
 ---
 
+## Qwen2.5 model (Alibaba / mlx-community) — Apache License 2.0
+
+The Audio Notes feature downloads and runs a local language model at runtime to turn
+transcripts into notes:
+
+- `mlx-community/Qwen2.5-3B-Instruct-4bit`
+
+This is a quantized derivative of Alibaba Cloud's `Qwen/Qwen2.5-3B-Instruct`, released
+under the Apache License 2.0. The mlx-community build is a quantized derivative work of
+that Apache-2.0 model.
+
+> Copyright the Qwen team, Alibaba Cloud, and the mlx-community contributors.
+> Licensed under the Apache License, Version 2.0. You may obtain a copy of the License at
+> http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+## mlx-lm — MIT License
+
+The Audio Notes feature uses [`mlx-lm`](https://github.com/ml-explore/mlx-lm) (pinned to
+`0.28.3`) to run the notes language model on-device via MLX. mlx-lm is distributed by Apple
+under the MIT License. The MIT terms below apply.
+
+---
+
 ## voxmlx — MIT License
 
 Macstral's bundled inference server (`Macstral/Resources/voxtral_server.py`) imports and
