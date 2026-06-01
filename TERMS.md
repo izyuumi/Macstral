@@ -56,28 +56,48 @@ remove features, and may modify or discontinue cloud processing, at any time.
 Because Macstral runs on-device, the free app continues to function locally
 regardless of the status of our hosted services.
 
-## 6. Refunds
+## 6. AI-Generated Output
+
+Transcriptions, auto-punctuation, and AI notes are produced by machine-learning
+models and may be inaccurate or incomplete. They are productivity aids, not a
+certified record, and you are responsible for reviewing output before relying on
+it.
+
+## 7. Feedback
+
+If you send us feedback, suggestions, or feature ideas, you grant us a perpetual,
+irrevocable, royalty-free license to use them to improve the Service, with no
+obligation to compensate you.
+
+## 8. Indemnification
+
+You agree to indemnify and hold us harmless from any claim or demand arising out
+of your misuse of the Service, your violation of these Terms, or your violation of
+any law or third-party right, including in connection with audio you submit for
+processing.
+
+## 9. Refunds
 
 Refunds are governed by our [Refund Policy](REFUND.md).
 
-## 7. Disclaimer of Warranty
+## 10. Disclaimer of Warranty
 
 THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND,
 EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
 AND NON-INFRINGEMENT. YOU ASSUME THE ENTIRE RISK AS TO QUALITY AND PERFORMANCE.
 
-## 8. Limitation of Liability
+## 11. Limitation of Liability
 
 TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL WE BE LIABLE FOR ANY
 INDIRECT, INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES ARISING OUT OF OR RELATED
 TO THE SERVICE. OUR TOTAL LIABILITY SHALL NOT EXCEED THE AMOUNT YOU PAID US.
 
-## 9. Governing Law
+## 12. Governing Law
 
 These Terms are governed by the laws of **Japan**, without regard to its
 conflict-of-laws principles.
 
-## 10. Contact
+## 13. Contact
 
 Questions about these Terms: **mail@yumi.to** ·
 [github.com/izyuumi/Macstral](https://github.com/izyuumi/Macstral)
