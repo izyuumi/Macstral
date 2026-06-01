@@ -4,11 +4,9 @@ import SwiftUI
 final class HistoryWindow {
     private var window: NSWindow?
     private let history: TranscriptHistory
-    private let licenseManager: LicenseManager
 
-    init(history: TranscriptHistory, licenseManager: LicenseManager) {
+    init(history: TranscriptHistory) {
         self.history = history
-        self.licenseManager = licenseManager
     }
 
     func show() {
@@ -18,7 +16,7 @@ final class HistoryWindow {
             return
         }
 
-        let hosting = NSHostingView(rootView: HistoryView(history: history, licenseManager: licenseManager))
+        let hosting = NSHostingView(rootView: HistoryView(history: history))
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -37,11 +35,7 @@ final class HistoryWindow {
 
 private struct HistoryView: View {
     @State private var searchText = ""
-    @State private var showUpsell = false
     let history: TranscriptHistory
-    let licenseManager: LicenseManager
-
-    private var isUnlocked: Bool { FeatureGate.isHistoryUnlocked(isPro: licenseManager.isPro) }
 
     private static let entryDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -57,42 +51,8 @@ private struct HistoryView: View {
     }
 
     var body: some View {
-        ZStack {
-            listContent
-                .blur(radius: isUnlocked ? 0 : 8)
-                .disabled(!isUnlocked)
-                .allowsHitTesting(isUnlocked)
-            if !isUnlocked {
-                upsellOverlay
-            }
-        }
-        .frame(minWidth: 520, minHeight: 360)
-        .sheet(isPresented: $showUpsell) {
-            UpsellSheet(licenseManager: licenseManager, highlight: "Transcript history")
-        }
-    }
-
-    @ViewBuilder
-    private var upsellOverlay: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
-            Text("Transcript history is a Pro feature")
-                .font(.headline)
-            Text("Your dictations are still saved on this Mac — upgrade to Pro to search, browse, and export your full history.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
-            Button("Upgrade to Pro — \(LemonSqueezyConfig.proPriceDisplay)") {
-                showUpsell = true
-            }
-            .buttonStyle(.borderedProminent)
-        }
-        .padding(28)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .shadow(radius: 20)
+        listContent
+            .frame(minWidth: 520, minHeight: 360)
     }
 
     private var listContent: some View {

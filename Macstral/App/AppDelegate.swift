@@ -86,11 +86,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Feature Gating
 
-    /// The language code sent to the backend, clamped to the Free tier's allowed set when the
-    /// user is not Pro. Enforced here (not just in the UI) so a stale UserDefaults value left
-    /// over from a previous Pro session cannot unlock a paid language.
+    /// The language code sent to the backend. All languages run on-device and are Free, so the
+    /// user's choice is sent through unchanged.
     private var effectiveLanguageCode: String? {
-        FeatureGate.effectiveLanguage(LanguageSettings.current, isPro: licenseManager.isPro).backendCode
+        LanguageSettings.current.backendCode
+    }
+
+    // MARK: - Processing Endpoint (on-device vs. cloud)
+
+    /// Set once a cloud connection attempt fails, pinning the rest of this app session to the
+    /// on-device path so dictation keeps working offline. Cleared only on relaunch.
+    private var cloudConnectionDisabled = false
+    /// Whether the in-flight persistent connection was opened against the cloud proxy.
+    private var attemptedCloudConnect = false
+
+    /// Resolves which transcription endpoint dictation should use, honoring the Pro gate, the
+    /// user's selected mode, whether a proxy is configured, and any earlier cloud failure.
+    private var dictationEndpoint: ProcessingEndpoint? {
+        ProcessingEndpoint.resolve(
+            isPro: licenseManager.isPro,
+            mode: cloudConnectionDisabled ? .onDevice : ProcessingModeSettings.current,
+            cloudConfigured: MacstralCloudConfig.isConfigured,
+            authToken: licenseManager.cloudAuthToken,
+            localPort: backendManager.serverPort
+        )
+    }
+
+    /// Opens the persistent transcription socket if it isn't already connected, choosing the
+    /// cloud proxy or the local server per `dictationEndpoint`.
+    private func connectDictationSocketIfNeeded() {
+        guard !webSocketClient.hasActiveConnection else { return }
+        switch dictationEndpoint {
+        case .cloud(let token):
+            attemptedCloudConnect = true
+            print("[WebSocket] Connecting to Macstral cloud proxy…")
+            webSocketClient.connect(to: MacstralCloudConfig.streamURL, authToken: token)
+        case .onDevice(let port):
+            attemptedCloudConnect = false
+            webSocketClient.connect(to: URL(string: "ws://127.0.0.1:\(port)")!)
+        case nil:
+            break
+        }
+    }
+
+    /// If a cloud connection attempt failed before the handshake completed, disable cloud for the
+    /// rest of the session and reconnect on-device so the user is never left without dictation.
+    private func handlePossibleCloudConnectionFailure() {
+        guard attemptedCloudConnect,
+              !cloudConnectionDisabled,
+              !webSocketClient.hasActiveConnection else { return }
+        cloudConnectionDisabled = true
+        attemptedCloudConnect = false
+        print("[WebSocket] Cloud connection failed — falling back to on-device for this session.")
+        connectDictationSocketIfNeeded()
     }
 
     // MARK: - Permissions
@@ -140,11 +188,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.appState.backendStatus = status
             self.statusBarController?.updateStatus(status)
-            // Establish persistent WebSocket when the backend becomes ready.
-            if status == .ready, !self.webSocketClient.hasActiveConnection,
-               let port = self.backendManager.serverPort {
-                let url = URL(string: "ws://127.0.0.1:\(port)")!
-                self.webSocketClient.connect(to: url)
+            // Establish the persistent transcription socket when the backend becomes ready.
+            // (The local backend is started even in cloud mode so on-device fallback is available.)
+            if status == .ready {
+                self.connectDictationSocketIfNeeded()
             }
         }
 
@@ -272,11 +319,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 let rawFinal = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Pro: auto-punctuate/format the final transcript. Free: insert verbatim.
-                // Runs only on the final `done` text, never during streaming (avoids cursor jumps).
-                let finalText = FeatureGate.isAutoPunctuationEnabled(isPro: self.licenseManager.isPro)
-                    ? TranscriptFormatter.format(rawFinal)
-                    : rawFinal
+                // Auto-punctuate/format the final transcript. Runs on-device and is Free for
+                // everyone. Runs only on the final `done` text, never during streaming (avoids
+                // cursor jumps).
+                let finalText = TranscriptFormatter.format(rawFinal)
                 self.appState.finalTranscript = finalText
                 if !finalText.isEmpty {
                     self.transcriptHistory.add(
@@ -300,10 +346,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         webSocketClient.onError = { [weak self] error in
+            guard let self else { return }
             print("[WebSocket] Error: \(error.localizedDescription)")
-            if self?.appState.dictationStatus != .idle {
-                self?.finishDictation()
+            if self.appState.dictationStatus != .idle {
+                self.finishDictation()
             }
+            // A pre-handshake failure on the cloud proxy reports via onError (not onDisconnect),
+            // so attempt the on-device fallback here.
+            self.handlePossibleCloudConnectionFailure()
         }
 
         webSocketClient.onTimingEvent = { [weak self] event in
@@ -326,11 +376,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.finishDictation()
             }
             // Reconnect persistent WebSocket if backend is still ready.
-            if self.appState.backendStatus == .ready,
-               let port = self.backendManager.serverPort {
-                let url = URL(string: "ws://127.0.0.1:\(port)")!
+            if self.appState.backendStatus == .ready {
                 print("[WebSocket] Reconnecting persistent connection...")
-                self.webSocketClient.connect(to: url)
+                self.connectDictationSocketIfNeeded()
             }
         }
     }
@@ -411,7 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController?.onPreferencesRequested = { [weak self] in
             self?.preferencesWindow?.show()
         }
-        historyWindow = HistoryWindow(history: transcriptHistory, licenseManager: licenseManager)
+        historyWindow = HistoryWindow(history: transcriptHistory)
         statusBarController?.onHistoryRequested = { [weak self] in
             self?.historyWindow?.show()
         }
@@ -427,7 +475,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState: appState,
             store: audioNotesStore,
             portProvider: { [weak self] in self?.backendManager.serverPort },
-            languageProvider: { [weak self] in self?.effectiveLanguageCode }
+            languageProvider: { [weak self] in self?.effectiveLanguageCode },
+            endpointProvider: { [weak self] in self?.dictationEndpoint }
         )
         audioNotesRecorder = recorder
 
@@ -496,11 +545,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         webSocketClient.disconnect()
         Task {
             await backendManager.restartForModelSwitch()
-            // Re-connect WebSocket to the new server port.
-            if let port = backendManager.serverPort {
-                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: serverURL)
-            }
+            // Re-connect the transcription socket (local server port changed on restart).
+            connectDictationSocketIfNeeded()
             appState.setupStep = .ready
         }
     }
@@ -533,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Use dictationStatus as the re-entrancy guard. Set it eagerly before connect()
         // so a second hotkey press while the WebSocket handshake is in-flight is ignored.
         guard appState.dictationStatus == .idle else { return }
-        guard let port = backendManager.serverPort else {
+        guard backendManager.serverPort != nil else {
             print("[Dictation] No server port available.")
             return
         }
@@ -582,17 +628,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if appState.dictationMode == .normal {
             // Normal mode: buffer audio locally, defer WS session until stop.
             // Ensure persistent connection is alive for when we need it later.
-            if !webSocketClient.hasActiveConnection {
-                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: serverURL)
-            }
+            connectDictationSocketIfNeeded()
         } else {
             // Streaming mode: start WS session immediately for real-time transcription.
             if webSocketClient.hasActiveConnection {
                 webSocketClient.startSession(language: self.effectiveLanguageCode)
             } else {
-                let serverURL = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: serverURL)
+                connectDictationSocketIfNeeded()
                 // onConnected callback will call startSession() once the handshake completes.
             }
         }
@@ -637,12 +679,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             print("[Dictation] stopDictation (normal): starting WS session to flush \(pendingAudioBytes) pending bytes")
             if webSocketClient.hasActiveConnection {
                 webSocketClient.startSession(language: self.effectiveLanguageCode)
-            } else if let port = backendManager.serverPort {
-                let url = URL(string: "ws://127.0.0.1:\(port)")!
-                webSocketClient.connect(to: url)
+            } else if dictationEndpoint != nil {
+                connectDictationSocketIfNeeded()
                 // onConnected → startSession → onSessionCreated → flush + commit
             } else {
-                print("[Dictation] stopDictation (normal): no connection or port, finishing")
+                print("[Dictation] stopDictation (normal): no connection or endpoint, finishing")
                 finishDictation()
             }
         } else {

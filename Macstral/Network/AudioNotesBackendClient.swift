@@ -20,10 +20,22 @@ final class AudioNotesBackendClient: NSObject {
 
     /// Opens a WebSocket to the local server on `port`. Idempotent.
     func connect(port: Int) {
-        guard task == nil else { return }
         guard let url = URL(string: "ws://127.0.0.1:\(port)") else { return }
+        connect(with: URLRequest(url: url))
+    }
+
+    /// Opens a WebSocket to the Macstral cloud proxy, authenticating with the user's license key.
+    /// The proxy speaks the same protocol as the local server. Idempotent.
+    func connect(url: URL, authToken: String) {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        connect(with: request)
+    }
+
+    private func connect(with request: URLRequest) {
+        guard task == nil else { return }
         let session = URLSession(configuration: .default)
-        let task = session.webSocketTask(with: url)
+        let task = session.webSocketTask(with: request)
         self.session = session
         self.task = task
         task.resume()

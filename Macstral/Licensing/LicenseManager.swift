@@ -58,6 +58,14 @@ final class LicenseManager {
     /// Last user-facing error from activate/validate, for the License tab to show.
     private(set) var lastError: String?
 
+    /// The raw license key used to authenticate to the Macstral cloud proxy, or `nil` when not
+    /// Pro. Read on demand from the store so it is never cached in an observable property (kept
+    /// out of logs and the UI). Only the online processing path consumes this.
+    var cloudAuthToken: String? {
+        guard isPro else { return nil }
+        return store.load()?.key
+    }
+
     // MARK: Configuration
 
     /// Offline grace window: stay Pro this long after the last successful validation even if

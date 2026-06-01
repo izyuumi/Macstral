@@ -156,6 +156,7 @@ struct PreferencesView: View {
     @State private var dictationMode: DictationMode
     @State private var language: TranscriptionLanguage
     @State private var modelQuality: ModelQuality
+    @State private var processingMode: ProcessingMode
     @State private var historyRetentionDays: Int
     @State private var historyRetentionEntries: Int
     @State private var pendingModelQuality: ModelQuality?
@@ -176,6 +177,7 @@ struct PreferencesView: View {
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
         _language = State(initialValue: LanguageSettings.current)
         _modelQuality = State(initialValue: ModelQualitySettings.current)
+        _processingMode = State(initialValue: ProcessingModeSettings.current)
         _historyRetentionDays = State(initialValue: retention.maxAgeDays)
         _historyRetentionEntries = State(initialValue: retention.maxEntries)
         self.transcriptHistory = transcriptHistory
@@ -208,8 +210,7 @@ struct PreferencesView: View {
                 LabeledContent("Language") {
                     Picker("", selection: $language) {
                         ForEach(TranscriptionLanguage.allCases) { lang in
-                            let locked = !FeatureGate.isLanguageUnlocked(lang, isPro: licenseManager.isPro)
-                            Text("\(lang.flag) \(lang.displayName)\(locked ? "  🔒" : "")").tag(lang)
+                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
                         }
                     }
                     .labelsHidden()
@@ -232,8 +233,7 @@ struct PreferencesView: View {
                 LabeledContent("Model quality") {
                     Picker("", selection: $modelQuality) {
                         ForEach(ModelQuality.allCases) { tier in
-                            let locked = !FeatureGate.isModelQualityUnlocked(tier, isPro: licenseManager.isPro)
-                            Text("\(tier.displayName) (\(tier.sizeLabel))\(locked ? "  🔒" : "")").tag(tier)
+                            Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
                         }
                     }
                     .labelsHidden()
@@ -250,6 +250,23 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
+            }
+
+            Section {
+                LabeledContent("Processing") {
+                    Picker("", selection: $processingMode) {
+                        ForEach(ProcessingMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+            } footer: {
+                Text(processingFooter)
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
             }
 
             Section {
@@ -275,22 +292,10 @@ struct PreferencesView: View {
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")
         }
-        .onChange(of: language) { oldLang, newLang in
-            guard FeatureGate.isLanguageUnlocked(newLang, isPro: licenseManager.isPro) else {
-                language = oldLang
-                upsellHighlight = "All languages"
-                showUpsell = true
-                return
-            }
+        .onChange(of: language) { _, newLang in
             LanguageSettings.current = newLang
         }
         .onChange(of: modelQuality) { oldQuality, newQuality in
-            guard FeatureGate.isModelQualityUnlocked(newQuality, isPro: licenseManager.isPro) else {
-                modelQuality = oldQuality
-                upsellHighlight = "Balanced & Accurate models"
-                showUpsell = true
-                return
-            }
             if newQuality.requiresDownload {
                 // Revert picker to old value; show confirmation alert first.
                 pendingModelQuality = newQuality
@@ -300,6 +305,21 @@ struct PreferencesView: View {
                 ModelQualitySettings.current = newQuality
                 onModelQualityChanged?(newQuality)
             }
+        }
+        .onChange(of: processingMode) { oldMode, newMode in
+            if newMode == .cloud {
+                guard FeatureGate.isCloudProcessingUnlocked(isPro: licenseManager.isPro) else {
+                    processingMode = oldMode
+                    upsellHighlight = "Cloud transcription"
+                    showUpsell = true
+                    return
+                }
+                guard MacstralCloudConfig.isConfigured else {
+                    processingMode = oldMode
+                    return
+                }
+            }
+            ProcessingModeSettings.current = newMode
         }
         .onChange(of: historyRetentionDays) { _, _ in
             saveHistoryRetentionSettings()
@@ -338,6 +358,16 @@ struct PreferencesView: View {
         .sheet(isPresented: $showUpsell) {
             UpsellSheet(licenseManager: licenseManager, highlight: upsellHighlight)
         }
+    }
+
+    private var processingFooter: String {
+        if !MacstralCloudConfig.isConfigured {
+            return "On-device runs entirely on your Mac, free and offline. Cloud processing (Pro) is coming soon."
+        }
+        if !licenseManager.isPro {
+            return "On-device runs entirely on your Mac, free and offline. Upgrade to Pro to use faster cloud processing."
+        }
+        return "On-device runs entirely on your Mac. Cloud sends audio to Macstral's servers for faster processing and falls back to on-device automatically if it's unavailable."
     }
 
     private func saveHistoryRetentionSettings() {

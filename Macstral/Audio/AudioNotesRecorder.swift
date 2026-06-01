@@ -18,6 +18,7 @@ final class AudioNotesRecorder {
     private let client = AudioNotesBackendClient()
     private let portProvider: () -> Int?
     private let languageProvider: () -> String?
+    private let endpointProvider: () -> ProcessingEndpoint?
 
     // MARK: - Constants
 
@@ -46,12 +47,29 @@ final class AudioNotesRecorder {
         appState: AppState,
         store: AudioNotesStore,
         portProvider: @escaping () -> Int?,
-        languageProvider: @escaping () -> String?
+        languageProvider: @escaping () -> String?,
+        endpointProvider: @escaping () -> ProcessingEndpoint?
     ) {
         self.appState = appState
         self.store = store
         self.portProvider = portProvider
         self.languageProvider = languageProvider
+        self.endpointProvider = endpointProvider
+    }
+
+    /// Connects `client` to the resolved processing endpoint (cloud proxy or local server).
+    /// Returns `false` when no endpoint is available.
+    private func connectClient() -> Bool {
+        switch endpointProvider() {
+        case .cloud(let token):
+            client.connect(url: MacstralCloudConfig.streamURL, authToken: token)
+            return true
+        case .onDevice(let port):
+            client.connect(port: port)
+            return true
+        case nil:
+            return false
+        }
     }
 
     // MARK: - Recording control
@@ -163,7 +181,7 @@ final class AudioNotesRecorder {
     /// Re-runs notes generation for an existing note (e.g. after editing or a failed first pass).
     func regenerateNotes(for note: AudioNote) {
         guard case .idle = appState.audioNotesStatus else { return }
-        guard let port = portProvider() else {
+        guard endpointProvider() != nil else {
             appState.audioNotesStatus = .error("Transcription engine isn't ready yet.")
             return
         }
@@ -172,7 +190,7 @@ final class AudioNotesRecorder {
 
         processingTask = Task { [weak self] in
             guard let self else { return }
-            self.client.connect(port: port)
+            _ = self.connectClient()
             do {
                 let notes = try await self.client.generateNotes(transcript: note.transcript)
                 var updated = note
@@ -194,11 +212,10 @@ final class AudioNotesRecorder {
             try? micURL.map { try FileManager.default.removeItem(at: $0) }
         }
 
-        guard let port = portProvider() else {
+        guard connectClient() else {
             appState.audioNotesStatus = .error("Transcription engine isn't ready yet.")
             return
         }
-        client.connect(port: port)
 
         // Mix the system-audio and (optional) microphone tracks. Both are PCM-16 mono 16 kHz,
         // so they can be summed sample-for-sample.

@@ -30,22 +30,35 @@ class WebSocketClient: NSObject {
 
     // MARK: - Connection Management
 
-    /// Connects to the Voxtral WebSocket server at the given URL.
+    /// Connects to the local Voxtral WebSocket server at the given URL.
     /// `isConnected` and `onSessionCreated` are deferred until the WebSocket handshake succeeds
     /// via `urlSession(_:webSocketTask:didOpenWithProtocol:)`.
     func connect(to url: URL? = nil) {
-        guard !isConnected else { return }
-        // Guard against duplicate connections: if a task is already in flight, bail out.
-        guard self.webSocketTask == nil else { return }
         guard let url else {
+            guard !isConnected, webSocketTask == nil else { return }
             onError?(WebSocketError.noServerURL)
             return
         }
+        connect(with: URLRequest(url: url))
+    }
+
+    /// Connects to the Macstral cloud proxy, authenticating with the user's license key.
+    /// The proxy speaks the same WebSocket protocol as the local server.
+    func connect(to url: URL, authToken: String) {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+        connect(with: request)
+    }
+
+    private func connect(with request: URLRequest) {
+        guard !isConnected else { return }
+        // Guard against duplicate connections: if a task is already in flight, bail out.
+        guard self.webSocketTask == nil else { return }
 
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         self.urlSession = session
 
-        let task = session.webSocketTask(with: url)
+        let task = session.webSocketTask(with: request)
         self.webSocketTask = task
         task.resume()
         // Do NOT set isConnected here; wait for didOpenWithProtocol to confirm the handshake.
