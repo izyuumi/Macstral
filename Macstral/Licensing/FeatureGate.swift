@@ -4,45 +4,45 @@ import Foundation
 
 /// Central policy for which features are available on the Free tier vs. Pro.
 ///
-/// All gate decisions take `isPro` explicitly (rather than reaching into a global) so they
-/// are pure and unit-testable, and so enforcement points can clamp values that may have been
-/// left over in UserDefaults from a previous Pro session (PLAN.md §4.2).
+/// Macstral's model: **everything that runs on-device is Free, with no restrictions.** The Free
+/// tier is a complete, unrestricted product — every language, every model-quality tier, transcript
+/// history, auto-punctuation, and Audio Notes all run locally at no charge. Pro unlocks the single
+/// optional thing that is *not* on-device: the **online (Macstral-hosted) processing path**, which
+/// can be faster or more accurate than local inference depending on the Mac.
+///
+/// All gate decisions take `isPro` explicitly (rather than reaching into a global) so they are pure
+/// and unit-testable. The on-device gates keep their `isPro` parameter for call-site stability even
+/// though they now always return `true`.
 enum FeatureGate {
 
-    // MARK: Language
+    // MARK: On-device features (always Free)
 
-    /// Languages usable without Pro.
-    static let freeLanguages: Set<TranscriptionLanguage> = [.auto, .en]
+    /// Every transcription language runs on-device via Voxtral/MLX, so all are Free.
+    static func isLanguageUnlocked(_ language: TranscriptionLanguage, isPro: Bool) -> Bool { true }
 
-    static func isLanguageUnlocked(_ language: TranscriptionLanguage, isPro: Bool) -> Bool {
-        isPro || freeLanguages.contains(language)
-    }
-
-    /// Clamps a requested language to what the current tier allows. Free users fall back to
-    /// auto-detect for any Pro-only language.
+    /// Language is never clamped — all languages are available on the Free tier.
     static func effectiveLanguage(_ language: TranscriptionLanguage, isPro: Bool) -> TranscriptionLanguage {
-        isLanguageUnlocked(language, isPro: isPro) ? language : .auto
+        language
     }
 
-    // MARK: Model quality
+    /// Every model-quality tier runs on-device via MLX, so all are Free.
+    static func isModelQualityUnlocked(_ quality: ModelQuality, isPro: Bool) -> Bool { true }
 
-    static func isModelQualityUnlocked(_ quality: ModelQuality, isPro: Bool) -> Bool {
-        isPro || quality == .fast
-    }
-
-    /// Clamps a requested model quality to what the current tier allows. Free users are
-    /// pinned to the Fast tier.
+    /// Model quality is never clamped — all tiers are available on the Free tier.
     static func effectiveModelQuality(_ quality: ModelQuality, isPro: Bool) -> ModelQuality {
-        isModelQualityUnlocked(quality, isPro: isPro) ? quality : .fast
+        quality
     }
 
-    // MARK: History
+    /// Transcript history is stored and viewed entirely on-device, so it is always Free.
+    static func isHistoryUnlocked(isPro: Bool) -> Bool { true }
 
-    /// Whether transcript history is viewable. History is still persisted when free
-    /// (PLAN.md §4.2 decision: gate access, keep persistence) so upgrading reveals back-history.
-    static func isHistoryUnlocked(isPro: Bool) -> Bool { isPro }
+    /// Auto-punctuation runs on-device (`TranscriptFormatter`, no network), so it is always Free.
+    static func isAutoPunctuationEnabled(isPro: Bool) -> Bool { true }
 
-    // MARK: Auto-punctuation
+    // MARK: Online processing (Pro)
 
-    static func isAutoPunctuationEnabled(isPro: Bool) -> Bool { isPro }
+    /// The optional online (Macstral-hosted proxy) transcription + notes path. This is the one
+    /// capability Pro unlocks: audio and transcripts are sent to Macstral's servers for faster or
+    /// more accurate processing. Free stays fully functional and 100% on-device.
+    static func isCloudProcessingUnlocked(isPro: Bool) -> Bool { isPro }
 }

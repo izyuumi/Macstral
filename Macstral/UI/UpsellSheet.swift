@@ -11,24 +11,24 @@ struct ProFeature: Identifiable {
 
     static let all: [ProFeature] = [
         ProFeature(
-            symbol: "globe",
-            title: "All languages",
-            detail: "Japanese, French, German, Spanish, Italian, Portuguese, Chinese — beyond English & auto-detect."
+            symbol: "bolt.horizontal.circle",
+            title: "Cloud transcription",
+            detail: "Offload dictation to Macstral's servers — often faster than on-device, and frees up your Mac."
         ),
         ProFeature(
-            symbol: "wand.and.stars",
-            title: "Auto-punctuation",
-            detail: "Capitalization, sentence punctuation, and tidy spacing applied automatically."
+            symbol: "sparkles",
+            title: "Cloud AI notes",
+            detail: "Generate meeting notes with a larger hosted model for sharper summaries."
         ),
         ProFeature(
-            symbol: "clock.arrow.circlepath",
-            title: "Transcript history",
-            detail: "Searchable local log of every dictation, with export."
+            symbol: "gauge.with.dots.needle.67percent",
+            title: "Consistent speed on any Mac",
+            detail: "Heavy models run in the cloud, so older or memory-limited Macs stay fast."
         ),
         ProFeature(
-            symbol: "dial.high",
-            title: "Balanced & Accurate models",
-            detail: "Higher-accuracy Voxtral model tiers in addition to Fast."
+            symbol: "lock.open",
+            title: "Everything else stays Free",
+            detail: "All on-device features — every language, model tier, history, auto-punctuation — are free for everyone."
         ),
     ]
 }
@@ -49,7 +49,7 @@ struct UpsellSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Upgrade to Macstral Pro")
                     .font(.title2).bold()
-                Text("A one-time \(LemonSqueezyConfig.proPriceDisplay) unlock. No subscription. Still 100% on-device.")
+                Text("A one-time \(LemonSqueezyConfig.proPriceDisplay) unlock. No subscription. Adds optional cloud speed — on-device stays free.")
                     .foregroundStyle(.secondary)
                     .font(.callout)
             }

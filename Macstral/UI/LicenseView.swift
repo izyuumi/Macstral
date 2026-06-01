@@ -141,9 +141,9 @@ struct LicenseView: View {
 
     private var statusDetail: String {
         switch licenseManager.state {
-        case .pro:             return "All Pro features unlocked. Thank you!"
+        case .pro:             return "Cloud processing unlocked. Thank you!"
         case .proOfflineGrace: return "Pro active (offline — will re-verify when back online)."
-        case .free:            return "Core dictation, English & auto-detect, Fast model."
+        case .free:            return "Full on-device app — every language, model, and history. Pro adds optional cloud speed."
         }
     }
 
