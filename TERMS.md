@@ -74,7 +74,7 @@ TO THE SERVICE. OUR TOTAL LIABILITY SHALL NOT EXCEED THE AMOUNT YOU PAID US.
 
 ## 9. Governing Law
 
-These Terms are governed by the laws of **[JURISDICTION]**, without regard to its
+These Terms are governed by the laws of **Japan**, without regard to its
 conflict-of-laws principles.
 
 ## 10. Contact

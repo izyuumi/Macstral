@@ -85,7 +85,7 @@ through 9 survive termination.
 ## 9. Governing Law
 
 This Agreement shall be governed by and construed in accordance with the laws of
-**[JURISDICTION]**, without regard to its conflict-of-laws principles.
+**Japan**, without regard to its conflict-of-laws principles.
 
 ---
 
