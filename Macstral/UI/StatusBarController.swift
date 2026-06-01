@@ -4,9 +4,12 @@ final class StatusBarController {
 
     private var statusItem: NSStatusItem
     private var statusMenuItem: NSMenuItem
+    private let recordAudioNotesItem = NSMenuItem()
     var onPreferencesRequested: (() -> Void)?
     var onHistoryRequested: (() -> Void)?
     var onPasteLastTranscriptionRequested: (() -> Void)?
+    var onAudioNotesRequested: (() -> Void)?
+    var onToggleAudioRecordingRequested: (() -> Void)?
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -64,6 +67,22 @@ final class StatusBarController {
 
         menu.addItem(.separator())
 
+        // Audio Notes: record system audio → transcript → AI notes.
+        recordAudioNotesItem.title = "Record System Audio"
+        recordAudioNotesItem.action = #selector(toggleAudioRecording)
+        recordAudioNotesItem.target = self
+        menu.addItem(recordAudioNotesItem)
+
+        let audioNotesItem = NSMenuItem(
+            title: "Audio Notes…",
+            action: #selector(openAudioNotes),
+            keyEquivalent: ""
+        )
+        audioNotesItem.target = self
+        menu.addItem(audioNotesItem)
+
+        menu.addItem(.separator())
+
         // Quit item
         let quitItem = NSMenuItem(
             title: "Quit Macstral",
@@ -88,7 +107,33 @@ final class StatusBarController {
         onPasteLastTranscriptionRequested?()
     }
 
+    @objc private func openAudioNotes() {
+        onAudioNotesRequested?()
+    }
+
+    @objc private func toggleAudioRecording() {
+        onToggleAudioRecordingRequested?()
+    }
+
     // MARK: - Public Interface
+
+    /// Reflects the Audio Notes pipeline state in the record menu item's title and enablement.
+    func updateAudioNotesStatus(_ status: AudioNotesStatus) {
+        switch status {
+        case .idle, .error:
+            recordAudioNotesItem.title = "Record System Audio"
+            recordAudioNotesItem.isEnabled = true
+        case .recording:
+            recordAudioNotesItem.title = "Stop Recording"
+            recordAudioNotesItem.isEnabled = true
+        case .transcribing:
+            recordAudioNotesItem.title = "Transcribing…"
+            recordAudioNotesItem.isEnabled = false
+        case .generatingNotes:
+            recordAudioNotesItem.title = "Generating Notes…"
+            recordAudioNotesItem.isEnabled = false
+        }
+    }
 
     func updateStatus(_ status: BackendStatus) {
         let label: String

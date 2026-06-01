@@ -26,6 +26,17 @@ enum DictationMode: String, CaseIterable {
     case streaming = "streaming"
 }
 
+// MARK: - AudioNotesStatus
+
+/// Lifecycle of the Audio Notes (system-audio recording → transcript → AI notes) pipeline.
+enum AudioNotesStatus: Equatable {
+    case idle
+    case recording
+    case transcribing
+    case generatingNotes
+    case error(String)
+}
+
 // MARK: - SetupStep
 
 enum SetupStep: Equatable {
@@ -59,6 +70,19 @@ final class AppState {
     var audioLevel: Float = 0.0
     var liveTranscript: String = ""
     var finalTranscript: String = ""
+
+    // MARK: Audio Notes
+
+    var audioNotesStatus: AudioNotesStatus = .idle
+    var audioNotesRecordingSeconds: Int = 0
+    var audioNotesProgressText: String = ""
+
+    /// When enabled (and mic permission is granted), the microphone is mixed into the system-audio
+    /// recording so the local speaker's voice is captured alongside what's playing (e.g. calls).
+    var audioNotesIncludeMicrophone: Bool {
+        get { UserDefaults.standard.object(forKey: "audioNotesIncludeMic") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "audioNotesIncludeMic") }
+    }
 
     // MARK: Dictation Mode
 

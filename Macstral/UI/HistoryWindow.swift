@@ -51,6 +51,11 @@ private struct HistoryView: View {
     }
 
     var body: some View {
+        listContent
+            .frame(minWidth: 520, minHeight: 360)
+    }
+
+    private var listContent: some View {
         VStack(spacing: 12) {
             if filteredEntries.isEmpty {
                 ContentUnavailableView(

@@ -156,15 +156,20 @@ struct PreferencesView: View {
     @State private var dictationMode: DictationMode
     @State private var language: TranscriptionLanguage
     @State private var modelQuality: ModelQuality
+    @State private var processingMode: ProcessingMode
     @State private var historyRetentionDays: Int
     @State private var historyRetentionEntries: Int
     @State private var pendingModelQuality: ModelQuality?
     @State private var showModelDownloadAlert: Bool = false
+    @State private var showUpsell: Bool = false
+    @State private var upsellHighlight: String?
     let transcriptHistory: TranscriptHistory?
+    let licenseManager: LicenseManager
     var onHotkeyChanged: (Key, NSEvent.ModifierFlags) -> Void
     var onModelQualityChanged: ((ModelQuality) -> Void)?
 
-    init(transcriptHistory: TranscriptHistory? = nil, onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+    init(transcriptHistory: TranscriptHistory? = nil, licenseManager: LicenseManager, onHotkeyChanged: @escaping (Key, NSEvent.ModifierFlags) -> Void) {
+        self.licenseManager = licenseManager
         let (k, m) = HotkeySettings.load()
         let retention = TranscriptHistoryRetention.load()
         _key = State(initialValue: k)
@@ -172,6 +177,7 @@ struct PreferencesView: View {
         _dictationMode = State(initialValue: DictationMode(rawValue: UserDefaults.standard.string(forKey: "dictationMode") ?? "") ?? .normal)
         _language = State(initialValue: LanguageSettings.current)
         _modelQuality = State(initialValue: ModelQualitySettings.current)
+        _processingMode = State(initialValue: ProcessingModeSettings.current)
         _historyRetentionDays = State(initialValue: retention.maxAgeDays)
         _historyRetentionEntries = State(initialValue: retention.maxEntries)
         self.transcriptHistory = transcriptHistory
@@ -247,6 +253,23 @@ struct PreferencesView: View {
             }
 
             Section {
+                LabeledContent("Processing") {
+                    Picker("", selection: $processingMode) {
+                        ForEach(ProcessingMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 200)
+                }
+            } footer: {
+                Text(processingFooter)
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+
+            Section {
                 LabeledContent("Keep history for") {
                     Stepper(value: $historyRetentionDays, in: 1...365) {
                         Text("\(historyRetentionDays) days")
@@ -283,6 +306,21 @@ struct PreferencesView: View {
                 onModelQualityChanged?(newQuality)
             }
         }
+        .onChange(of: processingMode) { oldMode, newMode in
+            if newMode == .cloud {
+                guard FeatureGate.isCloudProcessingUnlocked(isPro: licenseManager.isPro) else {
+                    processingMode = oldMode
+                    upsellHighlight = "Cloud transcription"
+                    showUpsell = true
+                    return
+                }
+                guard MacstralCloudConfig.isConfigured else {
+                    processingMode = oldMode
+                    return
+                }
+            }
+            ProcessingModeSettings.current = newMode
+        }
         .onChange(of: historyRetentionDays) { _, _ in
             saveHistoryRetentionSettings()
         }
@@ -317,6 +355,19 @@ struct PreferencesView: View {
         }
         .frame(width: 360)
         .padding(.vertical, 8)
+        .sheet(isPresented: $showUpsell) {
+            UpsellSheet(licenseManager: licenseManager, highlight: upsellHighlight)
+        }
+    }
+
+    private var processingFooter: String {
+        if !MacstralCloudConfig.isConfigured {
+            return "On-device runs entirely on your Mac, free and offline. Cloud processing (Pro) is coming soon."
+        }
+        if !licenseManager.isPro {
+            return "On-device runs entirely on your Mac, free and offline. Upgrade to Pro to use faster cloud processing."
+        }
+        return "On-device runs entirely on your Mac. Cloud sends audio to Macstral's servers for faster processing and falls back to on-device automatically if it's unavailable."
     }
 
     private func saveHistoryRetentionSettings() {

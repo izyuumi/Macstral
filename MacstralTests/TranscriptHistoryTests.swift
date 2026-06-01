@@ -149,7 +149,10 @@ final class TranscriptHistoryTests: XCTestCase {
         """
         try legacyJSON.data(using: .utf8)?.write(to: fileURL)
 
-        let reloaded = TranscriptHistory(fileURL: fileURL, userDefaults: defaults)
+        // Pin "now" close to the legacy entry's date so the 30-day retention window does not
+        // age it out — keeps this test deterministic regardless of the wall-clock date it runs.
+        let fixedNow = ISO8601DateFormatter().date(from: "2026-03-13T00:00:00Z")!
+        let reloaded = TranscriptHistory(fileURL: fileURL, userDefaults: defaults, nowProvider: { fixedNow })
 
         XCTAssertEqual(reloaded.entries.count, 1)
         XCTAssertEqual(reloaded.entries.first?.text, "Legacy entry")

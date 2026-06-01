@@ -257,7 +257,7 @@ final class PythonBackendManager: NSObject {
         // A stamp file records which dependency set is installed. When the pinned
         // commit changes, the stamp won't match and we'll reinstall.
         let depsStamp = Self.envDir.appendingPathComponent(".macstral_deps_stamp")
-        let expectedStamp = "voxmlx-48bfdec9+websockets==15.0.1"
+        let expectedStamp = "voxmlx-48bfdec9+websockets==15.0.1+mlx-lm==0.28.3"
         let currentStamp = (try? String(contentsOf: depsStamp, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         if currentStamp == expectedStamp {
             log("[PythonBackendManager] Dependencies already installed.")
@@ -273,6 +273,7 @@ final class PythonBackendManager: NSObject {
             // Pinned to an immutable commit hash to prevent supply-chain risk from mutable branches.
             "voxmlx @ git+https://github.com/T0mSIlver/voxmlx.git@48bfdec9bc4f4f01390b25b0e098deae6dd3ae6c",
             "websockets==15.0.1",
+            "mlx-lm==0.28.3",
         ]
 
         let (pipStatus, pipOutput): (Int32, Data) = try await Task.detached {
@@ -383,9 +384,11 @@ final class PythonBackendManager: NSObject {
         var environment = ProcessInfo.processInfo.environment
         environment["MACSTRAL_ENV_DIR"] = Self.envDir.path
         environment["MACSTRAL_MODEL_DIR"] = Self.modelDir.path
-        // Model quality selector: override model ID for non-Fast tiers.
+        // Model quality selector: override model ID for non-Fast tiers. All tiers run on-device
+        // via MLX and are Free, so the user's selection is honored directly.
         let selectedQuality = ModelQualitySettings.current
         environment["MACSTRAL_MODEL_ID"] = selectedQuality.modelID
+        environment["MACSTRAL_NOTES_MODEL_ID"] = "mlx-community/Qwen2.5-3B-Instruct-4bit"
         // For non-Fast tiers, set HF_HOME so HuggingFace stores model alongside the app.
         if selectedQuality != .fast {
             let altModelDir = Self.supportDir.appendingPathComponent("models/\(selectedQuality.rawValue)").path
