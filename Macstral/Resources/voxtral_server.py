@@ -262,7 +262,7 @@ DEBUG_TRANSCRIPTION = os.environ.get("MACSTRAL_DEBUG_TRANSCRIPTION", "").lower()
 # ---------------------------------------------------------------------------
 # Notes LLM globals (lazy — loaded only on first generate_notes command)
 # ---------------------------------------------------------------------------
-NOTES_MODEL_ID = os.environ.get("MACSTRAL_NOTES_MODEL_ID", "mlx-community/Qwen2.5-3B-Instruct-4bit")
+NOTES_MODEL_ID = os.environ.get("MACSTRAL_NOTES_MODEL_ID", "mlx-community/gemma-3-4b-it-4bit")
 _notes_model = None
 _notes_tokenizer = None
 

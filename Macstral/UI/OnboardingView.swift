@@ -80,11 +80,14 @@ struct OnboardingView: View {
     // MARK: - Actions
 
     private func requestMicrophonePermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            Task { @MainActor in
-                appState.hasMicPermission = granted
-                onPermissionStateChanged?()
-            }
+        // Use AVAudioApplication so the grant updates the SAME permission cache
+        // that PermissionChecker.checkMicrophonePermission() reads. Requesting via
+        // AVCaptureDevice updates a different subsystem, leaving the check stale
+        // (showing "Grant") until an app restart.
+        Task { @MainActor in
+            let granted = await PermissionChecker.requestMicrophonePermission()
+            appState.hasMicPermission = granted
+            onPermissionStateChanged?()
         }
     }
 

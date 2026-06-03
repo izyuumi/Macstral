@@ -388,7 +388,7 @@ final class PythonBackendManager: NSObject {
         // via MLX and are Free, so the user's selection is honored directly.
         let selectedQuality = ModelQualitySettings.current
         environment["MACSTRAL_MODEL_ID"] = selectedQuality.modelID
-        environment["MACSTRAL_NOTES_MODEL_ID"] = "mlx-community/Qwen2.5-3B-Instruct-4bit"
+        environment["MACSTRAL_NOTES_MODEL_ID"] = "mlx-community/gemma-3-4b-it-4bit"
         // For non-Fast tiers, set HF_HOME so HuggingFace stores model alongside the app.
         if selectedQuality != .fast {
             let altModelDir = Self.supportDir.appendingPathComponent("models/\(selectedQuality.rawValue)").path

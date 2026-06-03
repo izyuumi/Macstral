@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
     private var hudPanel: DictationHUDPanel?
     private var onboardingWindow: OnboardingWindow?
+    private var permissionPollTimer: Timer?
     private var preferencesWindow: PreferencesWindow?
     private var historyWindow: HistoryWindow?
     private var audioNotesWindow: AudioNotesWindow?
@@ -149,6 +150,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let allGranted = appState.hasMicPermission && appState.hasAccessibilityPermission
         appState.isOnboardingNeeded = !allGranted
+
+        // Accessibility has no system grant-callback (unlike mic). Once both
+        // permissions are in, stop polling for changes.
+        if allGranted {
+            stopPermissionPolling()
+        }
+    }
+
+    /// Polls permission state while onboarding is visible. Required because
+    /// granting Accessibility in System Settings does not notify the app, so
+    /// `AXIsProcessTrusted()` must be re-read until it flips true.
+    private func startPermissionPolling() {
+        permissionPollTimer?.invalidate()
+        let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkPermissions() }
+        }
+        permissionPollTimer = timer
+    }
+
+    private func stopPermissionPolling() {
+        permissionPollTimer?.invalidate()
+        permissionPollTimer = nil
     }
 
     // MARK: - Onboarding
@@ -157,6 +180,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Start Voxtral setup immediately during onboarding
         startVoxtralSetup()
 
+        // Poll for Accessibility grant — System Settings does not call back.
+        startPermissionPolling()
+
         onboardingWindow = OnboardingWindow(
             appState: appState,
             onPermissionStateChanged: { [weak self] in
@@ -164,6 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onComplete: { [weak self] in
                 guard let self else { return }
+                self.stopPermissionPolling()
                 self.appState.isOnboardingNeeded = false
                 self.onboardingWindow = nil
             }
