@@ -165,12 +165,33 @@ final class PythonBackendManager: NSObject {
         cancelActiveDownload()
         if let process = serverProcess {
             expectedTerminatingProcessID = ObjectIdentifier(process)
-            process.terminate()
+            terminateProcessHard(process)
         }
         serverProcess = nil
         serverPort = nil
         isActive = false
         onStatusChange?(.stopped)
+    }
+
+    /// Terminates the server process and *waits* for it to die, escalating to SIGKILL.
+    ///
+    /// `Process.terminate()` only sends SIGTERM and returns immediately. If the Python
+    /// server is mid-inference or slow to unwind, the app can exit before it dies, leaving
+    /// it reparented to launchd with the multi-GB model still in RAM. We send SIGTERM,
+    /// give it a short grace period, then SIGKILL anything still alive so the OS reclaims
+    /// the memory before we return.
+    private func terminateProcessHard(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate() // SIGTERM
+        let deadline = Date().addingTimeInterval(3.0)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if process.isRunning {
+            log("[PythonBackendManager] Server didn't exit on SIGTERM; sending SIGKILL.")
+            kill(process.processIdentifier, SIGKILL)
+            process.waitUntilExit()
+        }
     }
 
     // MARK: - Step 1: Download Python

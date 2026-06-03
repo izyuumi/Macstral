@@ -19,7 +19,33 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+
+# ---------------------------------------------------------------------------
+# Parent-death watchdog
+# ---------------------------------------------------------------------------
+# The macOS app launches this server as a child process. If the app exits
+# normally it sends SIGTERM (see PythonBackendManager.stop). But on a crash or
+# force-quit, applicationWillTerminate never runs and this process is reparented
+# to launchd (getppid() == 1) and lives on, holding the multi-GB MLX model in
+# RAM. Across relaunches these orphans accumulate and exhaust memory. To prevent
+# that, watch the parent PID and exit hard the moment it disappears.
+def _start_parent_death_watchdog():
+    expected_parent = os.getppid()
+
+    def _watch():
+        while True:
+            time.sleep(2.0)
+            # Reparented to launchd (1) or parent changed => the app is gone.
+            if os.getppid() != expected_parent or os.getppid() == 1:
+                os._exit(0)
+
+    t = threading.Thread(target=_watch, name="parent-death-watchdog", daemon=True)
+    t.start()
+
+
+_start_parent_death_watchdog()
 
 # ---------------------------------------------------------------------------
 # Resolve paths
