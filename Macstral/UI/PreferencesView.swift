@@ -343,17 +343,7 @@ struct PreferencesView: View {
         .onChange(of: modifiers.rawValue) { _, _ in
             onHotkeyChanged(key, modifiers)
         }
-        .toolbar {
-            ToolbarItem(placement: .destructiveAction) {
-                Button("Reset to Default") {
-                    key = HotkeySettings.defaultKey
-                    modifiers = HotkeySettings.defaultModifiers
-                    onHotkeyChanged(key, modifiers)
-                }
-                .foregroundStyle(.red)
-            }
-        }
-        .frame(width: 360)
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
         .sheet(isPresented: $showUpsell) {
             UpsellSheet(licenseManager: licenseManager, highlight: upsellHighlight)

@@ -39,7 +39,7 @@ struct LicenseView: View {
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 360)
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
     }
 

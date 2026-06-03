@@ -34,7 +34,7 @@ final class PreferencesWindow {
 
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 460),
-            styleMask: [.titled, .closable],
+            styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -62,6 +62,6 @@ private struct PreferencesTabView: View {
             LicenseView(licenseManager: licenseManager)
                 .tabItem { Label("License", systemImage: "checkmark.seal") }
         }
-        .frame(width: 420)
+        .frame(minWidth: 460, maxWidth: .infinity, minHeight: 420, maxHeight: .infinity)
     }
 }
