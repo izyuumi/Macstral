@@ -317,6 +317,7 @@ _NOTES_SYSTEM_PROMPT = (
 )
 
 _NOTES_MAX_TRANSCRIPT_CHARS = 12_000
+_REWRITE_MAX_INPUT_CHARS = 16_000
 
 
 def _generate_notes(transcript: str) -> str:
@@ -351,6 +352,39 @@ def _generate_notes(transcript: str) -> str:
     except TypeError:
         # Older mlx_lm versions may not accept keyword-only prompt=.
         result = generate(_notes_model, _notes_tokenizer, prompt, max_tokens=1200)
+
+    return result.strip()
+
+
+def _generate_rewrite(instructions: str, user_input: str) -> str:
+    """Synchronous local writing-layer request; meant to be called via asyncio.to_thread."""
+    _load_notes_model()
+
+    if len(user_input) > _REWRITE_MAX_INPUT_CHARS:
+        head = user_input[: _REWRITE_MAX_INPUT_CHARS // 2]
+        tail = user_input[-(_REWRITE_MAX_INPUT_CHARS // 2):]
+        user_input = head + "\n\n[... context truncated for length ...]\n\n" + tail
+        log(f"[rewrite] Input truncated to ~{_REWRITE_MAX_INPUT_CHARS} chars.", force=True)
+
+    messages = [
+        {"role": "system", "content": instructions},
+        {"role": "user", "content": user_input},
+    ]
+
+    if getattr(_notes_tokenizer, "chat_template", None):
+        prompt = _notes_tokenizer.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=False
+        )
+    else:
+        prompt = (
+            f"<|system|>\n{instructions}\n<|user|>\n{user_input}\n<|assistant|>\n"
+        )
+
+    from mlx_lm import generate  # noqa: PLC0415
+    try:
+        result = generate(_notes_model, _notes_tokenizer, prompt=prompt, max_tokens=900, verbose=False)
+    except TypeError:
+        result = generate(_notes_model, _notes_tokenizer, prompt, max_tokens=900)
 
     return result.strip()
 
@@ -563,6 +597,21 @@ async def handle_client(websocket):
                         await websocket.send(json.dumps({"type": "notes_done", "text": notes}))
                     except Exception as exc:
                         log(f"[notes] generate_notes error: {exc}", force=True)
+                        await websocket.send(json.dumps({"type": "error", "text": str(exc)}))
+
+            elif start_json is not None and start_json.get("cmd") == "rewrite_text":
+                instructions = start_json.get("instructions", "")
+                user_input = start_json.get("input", "")
+                if not user_input or not user_input.strip():
+                    await websocket.send(json.dumps({"type": "rewrite_done", "text": ""}))
+                else:
+                    log(f"[rewrite] rewrite_text request, input length={len(user_input)}", force=True)
+                    try:
+                        rewritten = await asyncio.to_thread(_generate_rewrite, instructions, user_input)
+                        log("[rewrite] rewrite_text complete.", force=True)
+                        await websocket.send(json.dumps({"type": "rewrite_done", "text": rewritten}))
+                    except Exception as exc:
+                        log(f"[rewrite] rewrite_text error: {exc}", force=True)
                         await websocket.send(json.dumps({"type": "error", "text": str(exc)}))
 
     log("[server] Client disconnected", force=True)

@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let webSocketClient = WebSocketClient()
     private let hotkeyManager = HotkeyManager()
     private let textInserter = AccessibilityTextInserter()
+    private let aiWritingEngine = AIWritingEngine()
     private let transcriptHistory = TranscriptHistory()
     private let audioNotesStore = AudioNotesStore()
     private var audioNotesRecorder: AudioNotesRecorder?
@@ -26,9 +27,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var setupTask: Task<Void, Never>?
     private var stopCommitTask: Task<Void, Never>?
     private var liveCommitTask: Task<Void, Never>?
+    private var aiWritingTask: Task<Void, Never>?
     private var sessionBufferedAudioBytes = 0
     private var latestTranscript = ""
     private var dictationTargetAppBundleIdentifier = "unknown"
+    private var dictationTarget: TextInsertionTarget?
     private var isCommitInFlight = false
     private var isFinalCommitRequested = false
     private var dictationStartedAt: TimeInterval = 0
@@ -346,27 +349,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return
                 }
                 let rawFinal = self.latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                // Auto-punctuate/format the final transcript. Runs on-device and is Free for
-                // everyone. Runs only on the final `done` text, never during streaming (avoids
-                // cursor jumps).
-                let finalText = TranscriptFormatter.format(rawFinal)
-                self.appState.finalTranscript = finalText
-                if !finalText.isEmpty {
-                    self.transcriptHistory.add(
-                        finalText,
-                        appBundleIdentifier: self.dictationTargetAppBundleIdentifier
-                    )
-                    if self.debugTranscriptionLogging {
-                        print("[Dictation] Inserting text: \"\(finalText.prefix(80))\"")
-                    } else {
-                        print("[Dictation] Inserting text (\(finalText.count) chars)")
-                    }
-                    self.appState.dictationStatus = .inserting
-                    self.textInserter.insertText(finalText)
-                } else {
-                    print("[Dictation] WARNING: finalText is empty, nothing to insert.")
+                let target = self.dictationTarget
+                self.appState.liveTranscript = "Polishing…"
+                self.aiWritingTask?.cancel()
+                self.aiWritingTask = Task { [weak self] in
+                    await self?.finishFinalTranscript(rawFinal, target: target)
                 }
-                self.finishDictation()
             } else {
                 print("[Dictation] onTranscriptDone ignored: status is \(self.appState.dictationStatus), not .processing")
             }
@@ -629,7 +617,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingAudioChunks.removeAll(keepingCapacity: false)
         pendingAudioBytes = 0
         hotkeyDownAt = ProcessInfo.processInfo.systemUptime
-        dictationTargetAppBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        dictationTarget = textInserter.captureTargetContext()
+        dictationTargetAppBundleIdentifier = dictationTarget?.context.appBundleIdentifier
+            ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            ?? "unknown"
         wsOpenAt = nil
         firstAudioSentAt = nil
         firstDeltaAt = nil
@@ -723,9 +714,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func finishDictation() {
+    private func finishFinalTranscript(_ rawFinal: String, target: TextInsertionTarget?) async {
+        let context = target?.context ?? FocusedTextContext.empty
+        let result = await aiWritingEngine.process(
+            rawTranscript: rawFinal,
+            context: context,
+            languageCode: effectiveLanguageCode,
+            localPort: backendManager.serverPort
+        )
+        guard !Task.isCancelled else { return }
+
+        let finalText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        appState.finalTranscript = finalText
+        if !finalText.isEmpty {
+            transcriptHistory.add(
+                finalText,
+                appBundleIdentifier: context.appBundleIdentifier
+            )
+            if debugTranscriptionLogging {
+                print("[Dictation] Inserting \(result.task.rawValue) via \(result.providerUsed.rawValue): \"\(finalText.prefix(80))\"")
+            } else {
+                print("[Dictation] Inserting \(finalText.count) chars via \(result.providerUsed.rawValue)")
+            }
+            appState.dictationStatus = .inserting
+            textInserter.insertText(finalText, into: target)
+        } else {
+            print("[Dictation] WARNING: finalText is empty, nothing to insert.")
+        }
+        aiWritingTask = nil
+        finishDictation(cancelAIWritingTask: false)
+    }
+
+    private func finishDictation(cancelAIWritingTask: Bool = true) {
         guard !isFinishingDictation else { return }
         isFinishingDictation = true
+        if cancelAIWritingTask {
+            aiWritingTask?.cancel()
+            aiWritingTask = nil
+        }
         stopCommitTask?.cancel()
         stopCommitTask = nil
         liveCommitTask?.cancel()
@@ -735,6 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionBufferedAudioBytes = 0
         latestTranscript = ""
         dictationTargetAppBundleIdentifier = "unknown"
+        dictationTarget = nil
         dictationStartedAt = 0
         pendingAudioChunks.removeAll(keepingCapacity: false)
         pendingAudioBytes = 0

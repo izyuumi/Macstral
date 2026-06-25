@@ -148,6 +148,176 @@ final class KeyRecorderNSView: NSView {
     }
 }
 
+private struct DictationPreferencesSection: View {
+    @Binding var dictationMode: DictationMode
+    @Binding var key: Key
+    @Binding var modifiers: NSEvent.ModifierFlags
+
+    var body: some View {
+        Section {
+            LabeledContent("Dictation Mode") {
+                Picker("", selection: $dictationMode) {
+                    Text("Normal").tag(DictationMode.normal)
+                    Text("Streaming").tag(DictationMode.streaming)
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 160)
+            }
+            LabeledContent("Hotkey") {
+                KeyRecorderView(key: $key, modifiers: $modifiers)
+                    .frame(width: 120, height: 28)
+            }
+        } footer: {
+            Text("Click the field and press a key combination to set a new hotkey.")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+}
+
+private struct LanguagePreferencesSection: View {
+    @Binding var language: TranscriptionLanguage
+
+    var body: some View {
+        Section {
+            LabeledContent("Language") {
+                Picker("", selection: $language) {
+                    ForEach(TranscriptionLanguage.allCases) { lang in
+                        Text("\(lang.flag) \(lang.displayName)").tag(lang)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 260)
+            }
+        } footer: {
+            Text(footerText)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+
+    private var footerText: String {
+        if language.isBeta {
+            return "\(language.displayName) is in beta — accuracy may vary. Auto-detect is recommended for most users."
+        }
+        return "Sets the transcription language. Auto-detect works well for single-language use; pick a specific language if you speak with an accent or mix languages."
+    }
+}
+
+private struct ModelQualityPreferencesSection: View {
+    @Binding var modelQuality: ModelQuality
+
+    var body: some View {
+        Section {
+            LabeledContent("Model quality") {
+                Picker("", selection: $modelQuality) {
+                    ForEach(ModelQuality.allCases) { tier in
+                        Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 200)
+            }
+        } footer: {
+            Text(footerText)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+
+    private var footerText: String {
+        if modelQuality.requiresDownload {
+            return "Requires a \(modelQuality.sizeLabel) download. Change takes effect after Macstral restarts the transcription engine."
+        }
+        return "Fast is the default — no extra download required. Higher quality tiers use more memory and take longer to load."
+    }
+}
+
+private struct ProcessingPreferencesSection: View {
+    @Binding var processingMode: ProcessingMode
+    let footerText: String
+
+    var body: some View {
+        Section {
+            LabeledContent("Processing") {
+                Picker("", selection: $processingMode) {
+                    ForEach(ProcessingMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 200)
+            }
+        } footer: {
+            Text(footerText)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+}
+
+private struct HistoryRetentionPreferencesSection: View {
+    @Binding var historyRetentionDays: Int
+    @Binding var historyRetentionEntries: Int
+
+    var body: some View {
+        Section {
+            LabeledContent("Keep history for") {
+                Stepper(value: $historyRetentionDays, in: 1...365) {
+                    Text("\(historyRetentionDays) days")
+                }
+                .frame(width: 160)
+            }
+            LabeledContent("Max history entries") {
+                Stepper(value: $historyRetentionEntries, in: 1...5000, step: 50) {
+                    Text("\(historyRetentionEntries)")
+                }
+                .frame(width: 160)
+            }
+        } footer: {
+            Text("Dictation history is stored locally only on this Mac and is never synced.")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        }
+    }
+}
+
+private struct PreferencesFormSections: View {
+    @Binding var dictationMode: DictationMode
+    @Binding var key: Key
+    @Binding var modifiers: NSEvent.ModifierFlags
+    @Binding var language: TranscriptionLanguage
+    @Binding var modelQuality: ModelQuality
+    @Binding var processingMode: ProcessingMode
+    @Binding var historyRetentionDays: Int
+    @Binding var historyRetentionEntries: Int
+    let processingFooter: String
+
+    var body: some View {
+        Form {
+            DictationPreferencesSection(
+                dictationMode: $dictationMode,
+                key: $key,
+                modifiers: $modifiers
+            )
+            LanguagePreferencesSection(language: $language)
+            ModelQualityPreferencesSection(modelQuality: $modelQuality)
+            ProcessingPreferencesSection(
+                processingMode: $processingMode,
+                footerText: processingFooter
+            )
+            HistoryRetentionPreferencesSection(
+                historyRetentionDays: $historyRetentionDays,
+                historyRetentionEntries: $historyRetentionEntries
+            )
+        }
+    }
+}
+
 // MARK: - PreferencesView
 
 struct PreferencesView: View {
@@ -185,109 +355,17 @@ struct PreferencesView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                LabeledContent("Dictation Mode") {
-                    Picker("", selection: $dictationMode) {
-                        Text("Normal").tag(DictationMode.normal)
-                        Text("Streaming").tag(DictationMode.streaming)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 160)
-                }
-                LabeledContent("Hotkey") {
-                    KeyRecorderView(key: $key, modifiers: $modifiers)
-                        .frame(width: 120, height: 28)
-                }
-            } footer: {
-                Text("Click the field and press a key combination to set a new hotkey.")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            }
-
-            Section {
-                LabeledContent("Language") {
-                    Picker("", selection: $language) {
-                        ForEach(TranscriptionLanguage.allCases) { lang in
-                            Text("\(lang.flag) \(lang.displayName)").tag(lang)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 260)
-                }
-            } footer: {
-                if language.isBeta {
-                    Text("\(language.displayName) is in beta — accuracy may vary. Auto-detect is recommended for most users.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                } else {
-                    Text("Sets the transcription language. Auto-detect works well for single-language use; pick a specific language if you speak with an accent or mix languages.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-            }
-
-            Section {
-                LabeledContent("Model quality") {
-                    Picker("", selection: $modelQuality) {
-                        ForEach(ModelQuality.allCases) { tier in
-                            Text("\(tier.displayName) (\(tier.sizeLabel))").tag(tier)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 200)
-                }
-            } footer: {
-                if modelQuality.requiresDownload {
-                    Text("Requires a \(modelQuality.sizeLabel) download. Change takes effect after Macstral restarts the transcription engine.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                } else {
-                    Text("Fast is the default — no extra download required. Higher quality tiers use more memory and take longer to load.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-            }
-
-            Section {
-                LabeledContent("Processing") {
-                    Picker("", selection: $processingMode) {
-                        ForEach(ProcessingMode.allCases) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 200)
-                }
-            } footer: {
-                Text(processingFooter)
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            }
-
-            Section {
-                LabeledContent("Keep history for") {
-                    Stepper(value: $historyRetentionDays, in: 1...365) {
-                        Text("\(historyRetentionDays) days")
-                    }
-                    .frame(width: 160)
-                }
-                LabeledContent("Max history entries") {
-                    Stepper(value: $historyRetentionEntries, in: 1...5000, step: 50) {
-                        Text("\(historyRetentionEntries)")
-                    }
-                    .frame(width: 160)
-                }
-            } footer: {
-                Text("Dictation history is stored locally only on this Mac and is never synced.")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            }
-        }
+        PreferencesFormSections(
+            dictationMode: $dictationMode,
+            key: $key,
+            modifiers: $modifiers,
+            language: $language,
+            modelQuality: $modelQuality,
+            processingMode: $processingMode,
+            historyRetentionDays: $historyRetentionDays,
+            historyRetentionEntries: $historyRetentionEntries,
+            processingFooter: processingFooter
+        )
         .formStyle(.grouped)
         .onChange(of: dictationMode) { _, newMode in
             UserDefaults.standard.set(newMode.rawValue, forKey: "dictationMode")

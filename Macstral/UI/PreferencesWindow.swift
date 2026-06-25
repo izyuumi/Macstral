@@ -59,6 +59,8 @@ private struct PreferencesTabView: View {
         TabView {
             general
                 .tabItem { Label("General", systemImage: "gearshape") }
+            AIWritingPreferencesView()
+                .tabItem { Label("AI Writing", systemImage: "wand.and.stars") }
             LicenseView(licenseManager: licenseManager)
                 .tabItem { Label("License", systemImage: "checkmark.seal") }
         }
